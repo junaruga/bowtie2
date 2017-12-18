@@ -1,535 +1,2395 @@
-#
-# Copyright 2011, Ben Langmead <langmea@cs.jhu.edu>
-#
-# This file is part of Bowtie 2.
-#
-# Bowtie 2 is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# Bowtie 2 is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with Bowtie 2.  If not, see <http://www.gnu.org/licenses/>.
-#
-
-#
-# Makefile for bowtie, bowtie2-build, bowtie2-inspect
-#
-
-prefix = /usr/local
-bindir = $(prefix)/bin
-
-INC = $(if $(RELEASE_BUILD),-I$(CURDIR)/.include)
-LIBS = $(LDFLAGS) $(if $(RELEASE_BUILD),-L$(CURDIR)/.lib) -lz
-GCC_PREFIX = $(shell dirname `which gcc`)
-GCC_SUFFIX =
-CC ?= $(GCC_PREFIX)/gcc$(GCC_SUFFIX)
-CPP ?= $(GCC_PREFIX)/g++$(GCC_SUFFIX)
-CXX ?= $(CPP)
-HEADERS = $(wildcard *.h)
-BOWTIE_MM = 1
-BOWTIE_SHARED_MEM =
-
-# Detect Cygwin or MinGW
-WINDOWS =
-MINGW =
-ifneq (,$(findstring MINGW,$(shell uname)))
-	WINDOWS = 1
-	MINGW = 1
-	# POSIX memory-mapped files not currently supported on Windows
-	BOWTIE_MM = 0
-	BOWTIE_SHARED_MEM = 0
-	override EXTRA_FLAGS += -ansi
-endif
-
-MACOS =
-ifneq (,$(findstring Darwin,$(shell uname)))
-	MACOS = 1
-	ifneq (,$(findstring 13,$(shell uname -r)))
-		CPP = clang++
-		CC = clang
-		override EXTRA_FLAGS += -stdlib=libstdc++
-	endif
-	ifeq (1, $(RELEASE_BUILD))
-		EXTRA_FLAGS += -mmacosx-version-min=10.9
-	endif
-endif
-
-POPCNT_CAPABILITY ?= 1
-ifeq (1, $(POPCNT_CAPABILITY))
-    override EXTRA_FLAGS += -DPOPCNT_CAPABILITY
-    INC += -I third_party
-endif
-
-MM_DEF =
-
-ifeq (1,$(BOWTIE_MM))
-	MM_DEF = -DBOWTIE_MM
-endif
-
-SHMEM_DEF =
-
-ifeq (1,$(BOWTIE_SHARED_MEM))
-	SHMEM_DEF = -DBOWTIE_SHARED_MEM
-endif
-
-PTHREAD_PKG =
-PTHREAD_LIB =
-
-#if we're not using TBB, then we can't use queuing locks
-ifeq (1,$(NO_TBB))
-	NO_QUEUELOCK=1
-endif
-
-ifeq (1,$(MINGW))
-	PTHREAD_LIB =
-else
-	PTHREAD_LIB = -lpthread
-endif
-
-ifeq (1,$(NO_SPINLOCK))
-	override EXTRA_FLAGS += -DNO_SPINLOCK
-endif
-
-#default is to use Intel TBB
-ifneq (1,$(NO_TBB))
-	LIBS += $(PTHREAD_LIB) -ltbb -ltbbmalloc$(if $(RELEASE_BUILD),,_proxy)
-	override EXTRA_FLAGS += -DWITH_TBB
-else
-	LIBS += $(PTHREAD_LIB)
-endif
-SEARCH_LIBS =
-BUILD_LIBS =
-INSPECT_LIBS =
-
-ifeq (1,$(MINGW))
-	BUILD_LIBS =
-	INSPECT_LIBS =
-endif
-
-ifeq (1,$(WITH_THREAD_PROFILING))
-	override EXTRA_FLAGS += -DPER_THREAD_TIMING=1
-endif
-
-ifeq (1,$(WITH_AFFINITY))
-	override EXTRA_FLAGS += -DWITH_AFFINITY=1
-endif
-
-#default is to use Intel TBB's queuing lock for better thread scaling performance
-ifneq (1,$(NO_QUEUELOCK))
-	override EXTRA_FLAGS += -DNO_SPINLOCK
-	override EXTRA_FLAGS += -DWITH_QUEUELOCK=1
-endif
-
-
-SHARED_CPPS = ccnt_lut.cpp ref_read.cpp alphabet.cpp shmem.cpp \
-              edit.cpp bt2_idx.cpp bt2_io.cpp bt2_util.cpp \
-              reference.cpp ds.cpp multikey_qsort.cpp limit.cpp \
-			  random_source.cpp
-
-ifeq (1,$(NO_TBB))
-	SHARED_CPPS += tinythread.cpp
-endif
-
-SEARCH_CPPS = qual.cpp pat.cpp sam.cpp \
-              read_qseq.cpp aligner_seed_policy.cpp \
-              aligner_seed.cpp \
-			  aligner_seed2.cpp \
-			  aligner_sw.cpp \
-			  aligner_sw_driver.cpp aligner_cache.cpp \
-			  aligner_result.cpp ref_coord.cpp mask.cpp \
-			  pe.cpp aln_sink.cpp dp_framer.cpp \
-			  scoring.cpp presets.cpp unique.cpp \
-			  simple_func.cpp \
-			  random_util.cpp \
-			  aligner_bt.cpp sse_util.cpp \
-			  aligner_swsse.cpp outq.cpp \
-			  aligner_swsse_loc_i16.cpp \
-			  aligner_swsse_ee_i16.cpp \
-			  aligner_swsse_loc_u8.cpp \
-			  aligner_swsse_ee_u8.cpp \
-			  aligner_driver.cpp
-
-SEARCH_CPPS_MAIN = $(SEARCH_CPPS) bowtie_main.cpp
-
-DP_CPPS = qual.cpp aligner_sw.cpp aligner_result.cpp ref_coord.cpp mask.cpp \
-          simple_func.cpp sse_util.cpp aligner_bt.cpp aligner_swsse.cpp \
-		  aligner_swsse_loc_i16.cpp aligner_swsse_ee_i16.cpp \
-		  aligner_swsse_loc_u8.cpp aligner_swsse_ee_u8.cpp scoring.cpp
-
-BUILD_CPPS = diff_sample.cpp
-BUILD_CPPS_MAIN = $(BUILD_CPPS) bowtie_build_main.cpp
-
-SEARCH_FRAGMENTS = $(wildcard search_*_phase*.c)
-VERSION = $(shell cat VERSION)
-
-BITS=32
-ifeq (x86_64,$(shell uname -m))
-	BITS=64
-endif
-ifeq (amd64,$(shell uname -m))
-	BITS=64
-endif
-# msys will always be 32 bit so look at the cpu arch instead.
-ifneq (,$(findstring AMD64,$(PROCESSOR_ARCHITEW6432)))
-	ifeq (1,$(MINGW))
-		BITS=64
-	endif
-endif
-ifeq (32,$(BITS))
-  $(error bowtie2 compilation requires a 64-bit platform )
-endif
-
-SSE_FLAG=-msse2
-
-DEBUG_FLAGS    = -O0 -g3 -m64 $(SSE_FLAG)
-DEBUG_DEFS     = -DCOMPILER_OPTIONS="\"$(DEBUG_FLAGS) $(EXTRA_FLAGS)\""
-RELEASE_FLAGS  = -O3 -m64 $(SSE_FLAG) -funroll-loops -g3
-RELEASE_DEFS   = -DCOMPILER_OPTIONS="\"$(RELEASE_FLAGS) $(EXTRA_FLAGS)\""
-NOASSERT_FLAGS = -DNDEBUG
-FILE_FLAGS     = -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE
-
-BOWTIE2_BIN_LIST =     bowtie2-build-s \
-                       bowtie2-build-l \
-                       bowtie2-align-s \
-                       bowtie2-align-l \
-                       bowtie2-inspect-s \
-                       bowtie2-inspect-l
-BOWTIE2_BIN_LIST_AUX = bowtie2-build-s-debug \
-                       bowtie2-build-l-debug \
-                       bowtie2-align-s-debug \
-                       bowtie2-align-l-debug \
-                       bowtie2-inspect-s-debug \
-                       bowtie2-inspect-l-debug
-
-GENERAL_LIST = $(wildcard scripts/*.sh) \
-               $(wildcard scripts/*.pl) \
-               doc/manual.html \
-               doc/README \
-               doc/style.css \
-			   $(wildcard example/index/*.bt2) \
-			   $(wildcard example/reads/*.fq) \
-			   $(wildcard example/reads/*.pl) \
-			   example/reference/lambda_virus.fa \
-               $(PTHREAD_PKG) \
-			   bowtie2 \
-			   bowtie2-build \
-			   bowtie2-inspect \
-               AUTHORS \
-               LICENSE \
-               NEWS \
-               MANUAL \
-               MANUAL.markdown \
-               TUTORIAL \
-               VERSION
-
-ifeq (1,$(WINDOWS))
-	BOWTIE2_BIN_LIST := $(BOWTIE2_BIN_LIST) bowtie2.bat bowtie2-build.bat bowtie2-inspect.bat
-    ifneq (1,$(NO_TBB))
-	    override EXTRA_FLAGS += -static-libgcc -static-libstdc++
-	else
-	    override EXTRA_FLAGS += -static -static-libgcc -static-libstdc++
-	endif
-endif
-
-# This is helpful on Windows under MinGW/MSYS, where Make might go for
-# the Windows FIND tool instead.
-FIND=$(shell which find)
-
-SRC_PKG_LIST = $(wildcard *.h) \
-               $(wildcard *.hh) \
-               $(wildcard *.c) \
-               $(wildcard *.cpp) \
-               $(wildcard third_party/*) \
-               doc/strip_markdown.pl \
-               Makefile \
-               $(GENERAL_LIST)
-
-ifeq (1,$(WINDOWS))
-	BIN_PKG_LIST = $(GENERAL_LIST) bowtie2.bat bowtie2-build.bat bowtie2-inspect.bat
-else
-	BIN_PKG_LIST = $(GENERAL_LIST)
-endif
-
-.PHONY: all allall both both-debug
-
-all: $(BOWTIE2_BIN_LIST)
-
-allall: $(BOWTIE2_BIN_LIST) $(BOWTIE2_BIN_LIST_AUX)
-
-both: bowtie2-align-s bowtie2-build-s bowtie2-align-l bowtie2-build-l
-
-both-debug: bowtie2-align-s-debug bowtie2-build-s-debug bowtie2-align-l-debug bowtie2-build-l-debug
-
-DEFS=-fno-strict-aliasing \
-     -DBOWTIE2_VERSION="\"`cat VERSION`\"" \
-     -DBUILD_HOST="\"`hostname`\"" \
-     -DBUILD_TIME="\"`date`\"" \
-     -DCOMPILER_VERSION="\"`$(CXX) -v 2>&1 | tail -1`\"" \
-     $(FILE_FLAGS) \
-     $(PREF_DEF) \
-     $(MM_DEF) \
-     $(SHMEM_DEF)
-
-#
-# bowtie2-build targets
-#
-
-bowtie2-build-s: bt2_build.cpp $(SHARED_CPPS) $(HEADERS)
-	$(CXX) $(RELEASE_FLAGS) $(RELEASE_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 $(NOASSERT_FLAGS) -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(BUILD_CPPS_MAIN) \
-		$(LIBS) $(BUILD_LIBS)
-
-bowtie2-build-l: bt2_build.cpp $(SHARED_CPPS) $(HEADERS)
-	$(CXX) $(RELEASE_FLAGS) $(RELEASE_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_64BIT_INDEX $(NOASSERT_FLAGS) -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(BUILD_CPPS_MAIN) \
-		$(LIBS) $(BUILD_LIBS)
-
-bowtie2-build-s-debug: bt2_build.cpp $(SHARED_CPPS) $(HEADERS)
-	$(CXX) $(DEBUG_FLAGS) $(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(BUILD_CPPS_MAIN) \
-		$(LIBS) $(BUILD_LIBS)
-
-bowtie2-build-l-debug: bt2_build.cpp $(SHARED_CPPS) $(HEADERS)
-	$(CXX) $(DEBUG_FLAGS) $(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_64BIT_INDEX -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(BUILD_CPPS_MAIN) \
-		$(LIBS) $(BUILD_LIBS)
-
-#
-# bowtie2-align targets
-#
-
-bowtie2-align-s: bt2_search.cpp $(SEARCH_CPPS) $(SHARED_CPPS) $(HEADERS) $(SEARCH_FRAGMENTS)
-	$(CXX) $(RELEASE_FLAGS) $(RELEASE_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 $(NOASSERT_FLAGS) -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(SEARCH_CPPS_MAIN) \
-		$(LIBS) $(SEARCH_LIBS)
-
-bowtie2-align-l: bt2_search.cpp $(SEARCH_CPPS) $(SHARED_CPPS) $(HEADERS) $(SEARCH_FRAGMENTS)
-	$(CXX) $(RELEASE_FLAGS) $(RELEASE_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_64BIT_INDEX $(NOASSERT_FLAGS) -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(SEARCH_CPPS_MAIN) \
-		$(LIBS) $(SEARCH_LIBS)
-
-bowtie2-align-s-debug: bt2_search.cpp $(SEARCH_CPPS) $(SHARED_CPPS) $(HEADERS) $(SEARCH_FRAGMENTS)
-	$(CXX) $(DEBUG_FLAGS) \
-		$(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(SEARCH_CPPS_MAIN) \
-		$(LIBS) $(SEARCH_LIBS)
-
-bowtie2-align-l-debug: bt2_search.cpp $(SEARCH_CPPS) $(SHARED_CPPS) $(HEADERS) $(SEARCH_FRAGMENTS)
-	$(CXX) $(DEBUG_FLAGS) \
-		$(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_64BIT_INDEX -Wall \
-		$(INC) \
-		-o $@ $< \
-		$(SHARED_CPPS) $(SEARCH_CPPS_MAIN) \
-		$(LIBS) $(SEARCH_LIBS)
-
-#
-# bowtie2-inspect targets
-#
-
-bowtie2-inspect-s: bt2_inspect.cpp $(HEADERS) $(SHARED_CPPS)
-	$(CXX) $(RELEASE_FLAGS) \
-		$(RELEASE_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_INSPECT_MAIN -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		$(SHARED_CPPS) \
-		$(LIBS) $(INSPECT_LIBS)
-
-bowtie2-inspect-l: bt2_inspect.cpp $(HEADERS) $(SHARED_CPPS)
-	$(CXX) $(RELEASE_FLAGS) \
-		$(RELEASE_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_INSPECT_MAIN  -DBOWTIE_64BIT_INDEX -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		$(SHARED_CPPS) \
-		$(LIBS) $(INSPECT_LIBS)
-
-bowtie2-inspect-s-debug: bt2_inspect.cpp $(HEADERS) $(SHARED_CPPS)
-	$(CXX) $(DEBUG_FLAGS) \
-		$(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_INSPECT_MAIN -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		$(SHARED_CPPS) \
-		$(LIBS) $(INSPECT_LIBS)
-
-bowtie2-inspect-l-debug: bt2_inspect.cpp $(HEADERS) $(SHARED_CPPS)
-	$(CXX) $(DEBUG_FLAGS) \
-		$(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_64BIT_INDEX -DBOWTIE_INSPECT_MAIN -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		$(SHARED_CPPS) \
-		$(LIBS) $(INSPECT_LIBS)
-
-#
-# bowtie2-dp targets
-#
-
-bowtie2-dp: bt2_dp.cpp $(HEADERS) $(SHARED_CPPS) $(DP_CPPS)
-	$(CXX) $(RELEASE_FLAGS) \
-		$(RELEASE_DEFS) $(EXTRA_FLAGS) $(NOASSERT_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_DP_MAIN -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		$(DP_CPPS) $(SHARED_CPPS) \
-		$(LIBS) $(SEARCH_LIBS)
-
-bowtie2-dp-debug: bt2_dp.cpp $(HEADERS) $(SHARED_CPPS) $(DP_CPPS)
-	$(CXX) $(DEBUG_FLAGS) \
-		$(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		$(DEFS) -DBOWTIE2 -DBOWTIE_DP_MAIN -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		$(DP_CPPS) $(SHARED_CPPS) \
-		$(LIBS) $(SEARCH_LIBS)
-
-bowtie2.bat:
-	echo "@echo off" > bowtie2.bat
-	echo "perl %~dp0/bowtie2 %*" >> bowtie2.bat
-
-bowtie2-build.bat:
-	echo "@echo off" > bowtie2-build.bat
-	echo "python %~dp0/bowtie2-build %*" >> bowtie2-build.bat
-
-bowtie2-inspect.bat:
-	echo "@echo off" > bowtie2-inspect.bat
-	echo "python %~dp0/bowtie2-inspect %*" >> bowtie2-inspect.bat
-
-.PHONY: bowtie2-src
-bowtie2-src: $(SRC_PKG_LIST)
-	chmod a+x scripts/*.sh scripts/*.pl
-	mkdir .src.tmp
-	mkdir .src.tmp/bowtie2-$(VERSION)
-	zip tmp.zip $(SRC_PKG_LIST)
-	mv tmp.zip .src.tmp/bowtie2-$(VERSION)
-	cd .src.tmp/bowtie2-$(VERSION) ; unzip tmp.zip ; rm -f tmp.zip
-	cd .src.tmp ; zip -r bowtie2-$(VERSION)-source.zip bowtie2-$(VERSION)
-	cp .src.tmp/bowtie2-$(VERSION)-source.zip .
-	rm -rf .src.tmp
-
-.PHONY: bowtie2-pkg
-bowtie2-pkg: static-libs $(BIN_PKG_LIST) $(BOWTIE2_BIN_LIST) $(BOWTIE2_BIN_LIST_AUX)
-	$(eval PKG_DIR=bowtie2-$(VERSION)-$(if $(MACOS),macos,$(if $(MINGW),mingw,linux))-x86_64)
-	chmod a+x scripts/*.sh scripts/*.pl
-	rm -rf .bin.tmp
-	mkdir -p .bin.tmp/$(PKG_DIR)
-	if [ -f bowtie2-align-s.exe ] ; then \
-		zip tmp.zip $(BIN_PKG_LIST) $(addsuffix .exe,$(BOWTIE2_BIN_LIST) $(BOWTIE2_BIN_LIST_AUX)) ; \
-	else \
-		zip tmp.zip $(BIN_PKG_LIST) $(BOWTIE2_BIN_LIST) $(BOWTIE2_BIN_LIST_AUX) ; \
-	fi
-	mv tmp.zip .bin.tmp/$(PKG_DIR)
-	cd .bin.tmp/$(PKG_DIR) ; unzip tmp.zip ; rm -f tmp.zip
-	cd .bin.tmp ; zip -r $(PKG_DIR).zip $(PKG_DIR)
-	cp .bin.tmp/$(PKG_DIR).zip .
-	rm -rf .bin.tmp
-
-bowtie2-seeds-debug: aligner_seed.cpp ccnt_lut.cpp alphabet.cpp aligner_seed.h bt2_idx.cpp bt2_io.cpp
-	$(CXX) $(DEBUG_FLAGS) \
-		$(DEBUG_DEFS) $(EXTRA_FLAGS) \
-		-DSCAN_MAIN \
-		$(DEFS) -Wall \
-		$(INC) -I . \
-		-o $@ $< \
-		aligner_seed.cpp bt2_idx.cpp ccnt_lut.cpp alphabet.cpp bt2_io.cpp \
-		$(LIBS)
-
-.PHONY: doc
-doc: doc/manual.html MANUAL
-
-doc/manual.html: MANUAL.markdown
-	echo "<h1>Table of Contents</h1>" > .tmp.head
-	pandoc -T "Bowtie 2 Manual" -B .tmp.head \
-	       --css style.css -o $@ \
-	       --from markdown --to HTML \
-	       --table-of-contents $^
-	rm -f .tmp.head
-
-MANUAL: MANUAL.markdown
-	pandoc -f markdown -t plain $^ -o $@
-
-.PHONY: install
-install: all
-	mkdir -p $(DESTDIR)$(bindir)
-	for file in $(BOWTIE2_BIN_LIST) bowtie2-inspect bowtie2-build bowtie2 ; do \
-		cp -f $$file $(DESTDIR)$(bindir) ; \
-	done
-
-.PHONY: simple-test
-simple-test: all perl-deps
-	eval `perl -I $(CURDIR)/.perllib.tmp/lib/perl5 -Mlocal::lib=$(CURDIR)/.perllib.tmp` ; \
-	sh ./scripts/test/simple_tests.sh
-
-.PHONY: random-test
-random-test: all perl-deps
-	eval `perl -I $(CURDIR)/.perllib.tmp/lib/perl5 -Mlocal::lib=$(CURDIR)/.perllib.tmp` ; \
-	sh ./scripts/sim/run.sh $(if $(NUM_CORES), $(NUM_CORES), 2)
-
-.PHONY: perl-deps
-perl-deps:
-	if [ ! -e .perllib.tmp ]; then \
-		DL=$$([ `which wget` ] && echo "wget --no-check-certificate -O-" || echo "curl -L") ; \
-		mkdir .perllib.tmp ; \
-		$$DL http://cpanmin.us | perl - -l $(CURDIR)/.perllib.tmp App::cpanminus local::lib ; \
-		eval `perl -I $(CURDIR)/.perllib.tmp/lib/perl5 -Mlocal::lib=$(CURDIR)/.perllib.tmp` ; \
-		cpanm --force Math::Random Clone Test::Deep Sys::Info ; \
-	fi
-
-static-libs:
-	if [[ ! -d $(CURDIR)/.lib || ! -d $(CURDIR)/.inc ]]; then \
-		mkdir $(CURDIR)/.lib $(CURDIR)/.include ; \
-	fi ; \
-	if [[ `uname` = "Darwin" ]]; then \
-		export CFLAGS=-mmacosx-version-min=10.9 ; \
-		export CXXFLAGS=-mmacosx-version-min=10.9 ; \
-	fi ; \
-	DL=$$([ `which wget` ] && echo "wget --no-check-certificate" || echo "curl -LO") ; \
-	cd /tmp ; \
-	$$DL https://zlib.net/zlib-1.2.11.tar.gz && tar xzf zlib-1.2.11.tar.gz && cd zlib-1.2.11 ; \
-	$(if $(MINGW), mingw32-make -f win32/Makefile.gcc, ./configure --static && make) && cp libz.a $(CURDIR)/.lib && cp zconf.h zlib.h $(CURDIR)/.include ; \
-	cd .. ; \
-	$$DL https://github.com/01org/tbb/archive/2017_U8.tar.gz && tar xzf 2017_U8.tar.gz && cd tbb-2017_U8; \
-	$(if $(MINGW), mingw32-make compiler=gcc arch=ia64 runtime=mingw, make) extra_inc=big_iron.inc -j4 \
-	&& cp -r include/tbb $(CURDIR)/.include && cp build/*_release/*.a $(CURDIR)/.lib
-
-.PHONY: test
-test: simple-test random-test
-
-.PHONY: clean
+# CMAKE generated file: DO NOT EDIT!
+# Generated by "Unix Makefiles" Generator, CMake Version 3.5
+
+# Default target executed when no arguments are given to make.
+default_target: all
+
+.PHONY : default_target
+
+# Allow only one "make -f Makefile2" at a time, but pass parallelism.
+.NOTPARALLEL:
+
+
+#=============================================================================
+# Special targets provided by cmake.
+
+# Disable implicit rules so canonical targets will work.
+.SUFFIXES:
+
+
+# Remove some rules from gmake that .SUFFIXES does not remove.
+SUFFIXES =
+
+.SUFFIXES: .hpux_make_needs_suffix_list
+
+
+# Suppress display of executed commands.
+$(VERBOSE).SILENT:
+
+
+# A target that is always out of date.
+cmake_force:
+
+.PHONY : cmake_force
+
+#=============================================================================
+# Set environment variables for the build.
+
+# The shell in which to execute make rules.
+SHELL = /bin/sh
+
+# The CMake executable.
+CMAKE_COMMAND = /usr/bin/cmake
+
+# The command to remove a file.
+RM = /usr/bin/cmake -E remove -f
+
+# Escaping for special characters.
+EQUALS = =
+
+# The top-level source directory on which CMake was run.
+CMAKE_SOURCE_DIR = /io
+
+# The top-level build directory on which CMake was run.
+CMAKE_BINARY_DIR = /io
+
+#=============================================================================
+# Targets provided globally by CMake.
+
+# Special rule for the target edit_cache
+edit_cache:
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "No interactive CMake dialog available..."
+	/usr/bin/cmake -E echo No\ interactive\ CMake\ dialog\ available.
+.PHONY : edit_cache
+
+# Special rule for the target edit_cache
+edit_cache/fast: edit_cache
+
+.PHONY : edit_cache/fast
+
+# Special rule for the target rebuild_cache
+rebuild_cache:
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running CMake to regenerate build system..."
+	/usr/bin/cmake -H$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
+.PHONY : rebuild_cache
+
+# Special rule for the target rebuild_cache
+rebuild_cache/fast: rebuild_cache
+
+.PHONY : rebuild_cache/fast
+
+# Special rule for the target test
+test:
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running tests..."
+	/usr/bin/ctest --force-new-ctest-process $(ARGS)
+.PHONY : test
+
+# Special rule for the target test
+test/fast: test
+
+.PHONY : test/fast
+
+# The main all target
+all: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /io/CMakeFiles /io/CMakeFiles/progress.marks
+	$(MAKE) -f CMakeFiles/Makefile2 all
+	$(CMAKE_COMMAND) -E cmake_progress_start /io/CMakeFiles 0
+.PHONY : all
+
+# The main clean target
 clean:
-	rm -f $(BOWTIE2_BIN_LIST) $(BOWTIE2_BIN_LIST_AUX) \
-	$(addsuffix .exe,$(BOWTIE2_BIN_LIST) $(BOWTIE2_BIN_LIST_AUX)) \
-	bowtie2-src.zip bowtie2-bin.zip
-	rm -f core.* .tmp.head
-	rm -rf *.dSYM
-	rm -rf .perllib.tmp
-	rm -rf .include .lib
+	$(MAKE) -f CMakeFiles/Makefile2 clean
+.PHONY : clean
+
+# The main clean target
+clean/fast: clean
+
+.PHONY : clean/fast
+
+# Prepare targets for installation.
+preinstall: all
+	$(MAKE) -f CMakeFiles/Makefile2 preinstall
+.PHONY : preinstall
+
+# Prepare targets for installation.
+preinstall/fast:
+	$(MAKE) -f CMakeFiles/Makefile2 preinstall
+.PHONY : preinstall/fast
+
+# clear depends
+depend:
+	$(CMAKE_COMMAND) -H$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 1
+.PHONY : depend
+
+#=============================================================================
+# Target rules for targets named bowtie2-inspect-l
+
+# Build rule for target.
+bowtie2-inspect-l: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 bowtie2-inspect-l
+.PHONY : bowtie2-inspect-l
+
+# fast build rule for target.
+bowtie2-inspect-l/fast:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/build
+.PHONY : bowtie2-inspect-l/fast
+
+#=============================================================================
+# Target rules for targets named bowtie2-build-l
+
+# Build rule for target.
+bowtie2-build-l: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 bowtie2-build-l
+.PHONY : bowtie2-build-l
+
+# fast build rule for target.
+bowtie2-build-l/fast:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/build
+.PHONY : bowtie2-build-l/fast
+
+#=============================================================================
+# Target rules for targets named bowtie2-build-s
+
+# Build rule for target.
+bowtie2-build-s: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 bowtie2-build-s
+.PHONY : bowtie2-build-s
+
+# fast build rule for target.
+bowtie2-build-s/fast:
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/build
+.PHONY : bowtie2-build-s/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousSubmit
+
+# Build rule for target.
+ContinuousSubmit: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousSubmit
+.PHONY : ContinuousSubmit
+
+# fast build rule for target.
+ContinuousSubmit/fast:
+	$(MAKE) -f CMakeFiles/ContinuousSubmit.dir/build.make CMakeFiles/ContinuousSubmit.dir/build
+.PHONY : ContinuousSubmit/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousCoverage
+
+# Build rule for target.
+ContinuousCoverage: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousCoverage
+.PHONY : ContinuousCoverage
+
+# fast build rule for target.
+ContinuousCoverage/fast:
+	$(MAKE) -f CMakeFiles/ContinuousCoverage.dir/build.make CMakeFiles/ContinuousCoverage.dir/build
+.PHONY : ContinuousCoverage/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousTest
+
+# Build rule for target.
+ContinuousTest: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousTest
+.PHONY : ContinuousTest
+
+# fast build rule for target.
+ContinuousTest/fast:
+	$(MAKE) -f CMakeFiles/ContinuousTest.dir/build.make CMakeFiles/ContinuousTest.dir/build
+.PHONY : ContinuousTest/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousBuild
+
+# Build rule for target.
+ContinuousBuild: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousBuild
+.PHONY : ContinuousBuild
+
+# fast build rule for target.
+ContinuousBuild/fast:
+	$(MAKE) -f CMakeFiles/ContinuousBuild.dir/build.make CMakeFiles/ContinuousBuild.dir/build
+.PHONY : ContinuousBuild/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousMemCheck
+
+# Build rule for target.
+ContinuousMemCheck: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousMemCheck
+.PHONY : ContinuousMemCheck
+
+# fast build rule for target.
+ContinuousMemCheck/fast:
+	$(MAKE) -f CMakeFiles/ContinuousMemCheck.dir/build.make CMakeFiles/ContinuousMemCheck.dir/build
+.PHONY : ContinuousMemCheck/fast
+
+#=============================================================================
+# Target rules for targets named Nightly
+
+# Build rule for target.
+Nightly: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 Nightly
+.PHONY : Nightly
+
+# fast build rule for target.
+Nightly/fast:
+	$(MAKE) -f CMakeFiles/Nightly.dir/build.make CMakeFiles/Nightly.dir/build
+.PHONY : Nightly/fast
+
+#=============================================================================
+# Target rules for targets named NightlyTest
+
+# Build rule for target.
+NightlyTest: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyTest
+.PHONY : NightlyTest
+
+# fast build rule for target.
+NightlyTest/fast:
+	$(MAKE) -f CMakeFiles/NightlyTest.dir/build.make CMakeFiles/NightlyTest.dir/build
+.PHONY : NightlyTest/fast
+
+#=============================================================================
+# Target rules for targets named bowtie2-align-l
+
+# Build rule for target.
+bowtie2-align-l: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 bowtie2-align-l
+.PHONY : bowtie2-align-l
+
+# fast build rule for target.
+bowtie2-align-l/fast:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/build
+.PHONY : bowtie2-align-l/fast
+
+#=============================================================================
+# Target rules for targets named NightlyUpdate
+
+# Build rule for target.
+NightlyUpdate: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyUpdate
+.PHONY : NightlyUpdate
+
+# fast build rule for target.
+NightlyUpdate/fast:
+	$(MAKE) -f CMakeFiles/NightlyUpdate.dir/build.make CMakeFiles/NightlyUpdate.dir/build
+.PHONY : NightlyUpdate/fast
+
+#=============================================================================
+# Target rules for targets named Continuous
+
+# Build rule for target.
+Continuous: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 Continuous
+.PHONY : Continuous
+
+# fast build rule for target.
+Continuous/fast:
+	$(MAKE) -f CMakeFiles/Continuous.dir/build.make CMakeFiles/Continuous.dir/build
+.PHONY : Continuous/fast
+
+#=============================================================================
+# Target rules for targets named NightlyBuild
+
+# Build rule for target.
+NightlyBuild: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyBuild
+.PHONY : NightlyBuild
+
+# fast build rule for target.
+NightlyBuild/fast:
+	$(MAKE) -f CMakeFiles/NightlyBuild.dir/build.make CMakeFiles/NightlyBuild.dir/build
+.PHONY : NightlyBuild/fast
+
+#=============================================================================
+# Target rules for targets named NightlyStart
+
+# Build rule for target.
+NightlyStart: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyStart
+.PHONY : NightlyStart
+
+# fast build rule for target.
+NightlyStart/fast:
+	$(MAKE) -f CMakeFiles/NightlyStart.dir/build.make CMakeFiles/NightlyStart.dir/build
+.PHONY : NightlyStart/fast
+
+#=============================================================================
+# Target rules for targets named NightlyMemoryCheck
+
+# Build rule for target.
+NightlyMemoryCheck: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyMemoryCheck
+.PHONY : NightlyMemoryCheck
+
+# fast build rule for target.
+NightlyMemoryCheck/fast:
+	$(MAKE) -f CMakeFiles/NightlyMemoryCheck.dir/build.make CMakeFiles/NightlyMemoryCheck.dir/build
+.PHONY : NightlyMemoryCheck/fast
+
+#=============================================================================
+# Target rules for targets named NightlyMemCheck
+
+# Build rule for target.
+NightlyMemCheck: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyMemCheck
+.PHONY : NightlyMemCheck
+
+# fast build rule for target.
+NightlyMemCheck/fast:
+	$(MAKE) -f CMakeFiles/NightlyMemCheck.dir/build.make CMakeFiles/NightlyMemCheck.dir/build
+.PHONY : NightlyMemCheck/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalStart
+
+# Build rule for target.
+ExperimentalStart: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalStart
+.PHONY : ExperimentalStart
+
+# fast build rule for target.
+ExperimentalStart/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalStart.dir/build.make CMakeFiles/ExperimentalStart.dir/build
+.PHONY : ExperimentalStart/fast
+
+#=============================================================================
+# Target rules for targets named bowtie2-inspect-s
+
+# Build rule for target.
+bowtie2-inspect-s: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 bowtie2-inspect-s
+.PHONY : bowtie2-inspect-s
+
+# fast build rule for target.
+bowtie2-inspect-s/fast:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/build
+.PHONY : bowtie2-inspect-s/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousConfigure
+
+# Build rule for target.
+ContinuousConfigure: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousConfigure
+.PHONY : ContinuousConfigure
+
+# fast build rule for target.
+ContinuousConfigure/fast:
+	$(MAKE) -f CMakeFiles/ContinuousConfigure.dir/build.make CMakeFiles/ContinuousConfigure.dir/build
+.PHONY : ContinuousConfigure/fast
+
+#=============================================================================
+# Target rules for targets named NightlyCoverage
+
+# Build rule for target.
+NightlyCoverage: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyCoverage
+.PHONY : NightlyCoverage
+
+# fast build rule for target.
+NightlyCoverage/fast:
+	$(MAKE) -f CMakeFiles/NightlyCoverage.dir/build.make CMakeFiles/NightlyCoverage.dir/build
+.PHONY : NightlyCoverage/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalUpdate
+
+# Build rule for target.
+ExperimentalUpdate: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalUpdate
+.PHONY : ExperimentalUpdate
+
+# fast build rule for target.
+ExperimentalUpdate/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalUpdate.dir/build.make CMakeFiles/ExperimentalUpdate.dir/build
+.PHONY : ExperimentalUpdate/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalConfigure
+
+# Build rule for target.
+ExperimentalConfigure: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalConfigure
+.PHONY : ExperimentalConfigure
+
+# fast build rule for target.
+ExperimentalConfigure/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalConfigure.dir/build.make CMakeFiles/ExperimentalConfigure.dir/build
+.PHONY : ExperimentalConfigure/fast
+
+#=============================================================================
+# Target rules for targets named bowtie2-align-s
+
+# Build rule for target.
+bowtie2-align-s: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 bowtie2-align-s
+.PHONY : bowtie2-align-s
+
+# fast build rule for target.
+bowtie2-align-s/fast:
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/build
+.PHONY : bowtie2-align-s/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalCoverage
+
+# Build rule for target.
+ExperimentalCoverage: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalCoverage
+.PHONY : ExperimentalCoverage
+
+# fast build rule for target.
+ExperimentalCoverage/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalCoverage.dir/build.make CMakeFiles/ExperimentalCoverage.dir/build
+.PHONY : ExperimentalCoverage/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalBuild
+
+# Build rule for target.
+ExperimentalBuild: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalBuild
+.PHONY : ExperimentalBuild
+
+# fast build rule for target.
+ExperimentalBuild/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalBuild.dir/build.make CMakeFiles/ExperimentalBuild.dir/build
+.PHONY : ExperimentalBuild/fast
+
+#=============================================================================
+# Target rules for targets named NightlyConfigure
+
+# Build rule for target.
+NightlyConfigure: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlyConfigure
+.PHONY : NightlyConfigure
+
+# fast build rule for target.
+NightlyConfigure/fast:
+	$(MAKE) -f CMakeFiles/NightlyConfigure.dir/build.make CMakeFiles/NightlyConfigure.dir/build
+.PHONY : NightlyConfigure/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalTest
+
+# Build rule for target.
+ExperimentalTest: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalTest
+.PHONY : ExperimentalTest
+
+# fast build rule for target.
+ExperimentalTest/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalTest.dir/build.make CMakeFiles/ExperimentalTest.dir/build
+.PHONY : ExperimentalTest/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalMemCheck
+
+# Build rule for target.
+ExperimentalMemCheck: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalMemCheck
+.PHONY : ExperimentalMemCheck
+
+# fast build rule for target.
+ExperimentalMemCheck/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalMemCheck.dir/build.make CMakeFiles/ExperimentalMemCheck.dir/build
+.PHONY : ExperimentalMemCheck/fast
+
+#=============================================================================
+# Target rules for targets named Experimental
+
+# Build rule for target.
+Experimental: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 Experimental
+.PHONY : Experimental
+
+# fast build rule for target.
+Experimental/fast:
+	$(MAKE) -f CMakeFiles/Experimental.dir/build.make CMakeFiles/Experimental.dir/build
+.PHONY : Experimental/fast
+
+#=============================================================================
+# Target rules for targets named NightlySubmit
+
+# Build rule for target.
+NightlySubmit: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 NightlySubmit
+.PHONY : NightlySubmit
+
+# fast build rule for target.
+NightlySubmit/fast:
+	$(MAKE) -f CMakeFiles/NightlySubmit.dir/build.make CMakeFiles/NightlySubmit.dir/build
+.PHONY : NightlySubmit/fast
+
+#=============================================================================
+# Target rules for targets named ExperimentalSubmit
+
+# Build rule for target.
+ExperimentalSubmit: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ExperimentalSubmit
+.PHONY : ExperimentalSubmit
+
+# fast build rule for target.
+ExperimentalSubmit/fast:
+	$(MAKE) -f CMakeFiles/ExperimentalSubmit.dir/build.make CMakeFiles/ExperimentalSubmit.dir/build
+.PHONY : ExperimentalSubmit/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousStart
+
+# Build rule for target.
+ContinuousStart: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousStart
+.PHONY : ContinuousStart
+
+# fast build rule for target.
+ContinuousStart/fast:
+	$(MAKE) -f CMakeFiles/ContinuousStart.dir/build.make CMakeFiles/ContinuousStart.dir/build
+.PHONY : ContinuousStart/fast
+
+#=============================================================================
+# Target rules for targets named ContinuousUpdate
+
+# Build rule for target.
+ContinuousUpdate: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 ContinuousUpdate
+.PHONY : ContinuousUpdate
+
+# fast build rule for target.
+ContinuousUpdate/fast:
+	$(MAKE) -f CMakeFiles/ContinuousUpdate.dir/build.make CMakeFiles/ContinuousUpdate.dir/build
+.PHONY : ContinuousUpdate/fast
+
+aligner_bt.o: aligner_bt.cpp.o
+
+.PHONY : aligner_bt.o
+
+# target to build an object file
+aligner_bt.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_bt.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_bt.cpp.o
+.PHONY : aligner_bt.cpp.o
+
+aligner_bt.i: aligner_bt.cpp.i
+
+.PHONY : aligner_bt.i
+
+# target to preprocess a source file
+aligner_bt.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_bt.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_bt.cpp.i
+.PHONY : aligner_bt.cpp.i
+
+aligner_bt.s: aligner_bt.cpp.s
+
+.PHONY : aligner_bt.s
+
+# target to generate assembly for a file
+aligner_bt.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_bt.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_bt.cpp.s
+.PHONY : aligner_bt.cpp.s
+
+aligner_cache.o: aligner_cache.cpp.o
+
+.PHONY : aligner_cache.o
+
+# target to build an object file
+aligner_cache.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_cache.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_cache.cpp.o
+.PHONY : aligner_cache.cpp.o
+
+aligner_cache.i: aligner_cache.cpp.i
+
+.PHONY : aligner_cache.i
+
+# target to preprocess a source file
+aligner_cache.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_cache.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_cache.cpp.i
+.PHONY : aligner_cache.cpp.i
+
+aligner_cache.s: aligner_cache.cpp.s
+
+.PHONY : aligner_cache.s
+
+# target to generate assembly for a file
+aligner_cache.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_cache.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_cache.cpp.s
+.PHONY : aligner_cache.cpp.s
+
+aligner_driver.o: aligner_driver.cpp.o
+
+.PHONY : aligner_driver.o
+
+# target to build an object file
+aligner_driver.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_driver.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_driver.cpp.o
+.PHONY : aligner_driver.cpp.o
+
+aligner_driver.i: aligner_driver.cpp.i
+
+.PHONY : aligner_driver.i
+
+# target to preprocess a source file
+aligner_driver.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_driver.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_driver.cpp.i
+.PHONY : aligner_driver.cpp.i
+
+aligner_driver.s: aligner_driver.cpp.s
+
+.PHONY : aligner_driver.s
+
+# target to generate assembly for a file
+aligner_driver.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_driver.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_driver.cpp.s
+.PHONY : aligner_driver.cpp.s
+
+aligner_result.o: aligner_result.cpp.o
+
+.PHONY : aligner_result.o
+
+# target to build an object file
+aligner_result.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_result.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_result.cpp.o
+.PHONY : aligner_result.cpp.o
+
+aligner_result.i: aligner_result.cpp.i
+
+.PHONY : aligner_result.i
+
+# target to preprocess a source file
+aligner_result.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_result.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_result.cpp.i
+.PHONY : aligner_result.cpp.i
+
+aligner_result.s: aligner_result.cpp.s
+
+.PHONY : aligner_result.s
+
+# target to generate assembly for a file
+aligner_result.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_result.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_result.cpp.s
+.PHONY : aligner_result.cpp.s
+
+aligner_seed.o: aligner_seed.cpp.o
+
+.PHONY : aligner_seed.o
+
+# target to build an object file
+aligner_seed.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed.cpp.o
+.PHONY : aligner_seed.cpp.o
+
+aligner_seed.i: aligner_seed.cpp.i
+
+.PHONY : aligner_seed.i
+
+# target to preprocess a source file
+aligner_seed.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed.cpp.i
+.PHONY : aligner_seed.cpp.i
+
+aligner_seed.s: aligner_seed.cpp.s
+
+.PHONY : aligner_seed.s
+
+# target to generate assembly for a file
+aligner_seed.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed.cpp.s
+.PHONY : aligner_seed.cpp.s
+
+aligner_seed2.o: aligner_seed2.cpp.o
+
+.PHONY : aligner_seed2.o
+
+# target to build an object file
+aligner_seed2.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed2.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed2.cpp.o
+.PHONY : aligner_seed2.cpp.o
+
+aligner_seed2.i: aligner_seed2.cpp.i
+
+.PHONY : aligner_seed2.i
+
+# target to preprocess a source file
+aligner_seed2.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed2.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed2.cpp.i
+.PHONY : aligner_seed2.cpp.i
+
+aligner_seed2.s: aligner_seed2.cpp.s
+
+.PHONY : aligner_seed2.s
+
+# target to generate assembly for a file
+aligner_seed2.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed2.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed2.cpp.s
+.PHONY : aligner_seed2.cpp.s
+
+aligner_seed_policy.o: aligner_seed_policy.cpp.o
+
+.PHONY : aligner_seed_policy.o
+
+# target to build an object file
+aligner_seed_policy.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed_policy.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed_policy.cpp.o
+.PHONY : aligner_seed_policy.cpp.o
+
+aligner_seed_policy.i: aligner_seed_policy.cpp.i
+
+.PHONY : aligner_seed_policy.i
+
+# target to preprocess a source file
+aligner_seed_policy.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed_policy.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed_policy.cpp.i
+.PHONY : aligner_seed_policy.cpp.i
+
+aligner_seed_policy.s: aligner_seed_policy.cpp.s
+
+.PHONY : aligner_seed_policy.s
+
+# target to generate assembly for a file
+aligner_seed_policy.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_seed_policy.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_seed_policy.cpp.s
+.PHONY : aligner_seed_policy.cpp.s
+
+aligner_sw.o: aligner_sw.cpp.o
+
+.PHONY : aligner_sw.o
+
+# target to build an object file
+aligner_sw.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_sw.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_sw.cpp.o
+.PHONY : aligner_sw.cpp.o
+
+aligner_sw.i: aligner_sw.cpp.i
+
+.PHONY : aligner_sw.i
+
+# target to preprocess a source file
+aligner_sw.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_sw.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_sw.cpp.i
+.PHONY : aligner_sw.cpp.i
+
+aligner_sw.s: aligner_sw.cpp.s
+
+.PHONY : aligner_sw.s
+
+# target to generate assembly for a file
+aligner_sw.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_sw.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_sw.cpp.s
+.PHONY : aligner_sw.cpp.s
+
+aligner_sw_driver.o: aligner_sw_driver.cpp.o
+
+.PHONY : aligner_sw_driver.o
+
+# target to build an object file
+aligner_sw_driver.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_sw_driver.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_sw_driver.cpp.o
+.PHONY : aligner_sw_driver.cpp.o
+
+aligner_sw_driver.i: aligner_sw_driver.cpp.i
+
+.PHONY : aligner_sw_driver.i
+
+# target to preprocess a source file
+aligner_sw_driver.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_sw_driver.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_sw_driver.cpp.i
+.PHONY : aligner_sw_driver.cpp.i
+
+aligner_sw_driver.s: aligner_sw_driver.cpp.s
+
+.PHONY : aligner_sw_driver.s
+
+# target to generate assembly for a file
+aligner_sw_driver.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_sw_driver.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_sw_driver.cpp.s
+.PHONY : aligner_sw_driver.cpp.s
+
+aligner_swsse.o: aligner_swsse.cpp.o
+
+.PHONY : aligner_swsse.o
+
+# target to build an object file
+aligner_swsse.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse.cpp.o
+.PHONY : aligner_swsse.cpp.o
+
+aligner_swsse.i: aligner_swsse.cpp.i
+
+.PHONY : aligner_swsse.i
+
+# target to preprocess a source file
+aligner_swsse.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse.cpp.i
+.PHONY : aligner_swsse.cpp.i
+
+aligner_swsse.s: aligner_swsse.cpp.s
+
+.PHONY : aligner_swsse.s
+
+# target to generate assembly for a file
+aligner_swsse.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse.cpp.s
+.PHONY : aligner_swsse.cpp.s
+
+aligner_swsse_ee_i16.o: aligner_swsse_ee_i16.cpp.o
+
+.PHONY : aligner_swsse_ee_i16.o
+
+# target to build an object file
+aligner_swsse_ee_i16.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_ee_i16.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_ee_i16.cpp.o
+.PHONY : aligner_swsse_ee_i16.cpp.o
+
+aligner_swsse_ee_i16.i: aligner_swsse_ee_i16.cpp.i
+
+.PHONY : aligner_swsse_ee_i16.i
+
+# target to preprocess a source file
+aligner_swsse_ee_i16.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_ee_i16.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_ee_i16.cpp.i
+.PHONY : aligner_swsse_ee_i16.cpp.i
+
+aligner_swsse_ee_i16.s: aligner_swsse_ee_i16.cpp.s
+
+.PHONY : aligner_swsse_ee_i16.s
+
+# target to generate assembly for a file
+aligner_swsse_ee_i16.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_ee_i16.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_ee_i16.cpp.s
+.PHONY : aligner_swsse_ee_i16.cpp.s
+
+aligner_swsse_ee_u8.o: aligner_swsse_ee_u8.cpp.o
+
+.PHONY : aligner_swsse_ee_u8.o
+
+# target to build an object file
+aligner_swsse_ee_u8.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_ee_u8.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_ee_u8.cpp.o
+.PHONY : aligner_swsse_ee_u8.cpp.o
+
+aligner_swsse_ee_u8.i: aligner_swsse_ee_u8.cpp.i
+
+.PHONY : aligner_swsse_ee_u8.i
+
+# target to preprocess a source file
+aligner_swsse_ee_u8.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_ee_u8.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_ee_u8.cpp.i
+.PHONY : aligner_swsse_ee_u8.cpp.i
+
+aligner_swsse_ee_u8.s: aligner_swsse_ee_u8.cpp.s
+
+.PHONY : aligner_swsse_ee_u8.s
+
+# target to generate assembly for a file
+aligner_swsse_ee_u8.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_ee_u8.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_ee_u8.cpp.s
+.PHONY : aligner_swsse_ee_u8.cpp.s
+
+aligner_swsse_loc_i16.o: aligner_swsse_loc_i16.cpp.o
+
+.PHONY : aligner_swsse_loc_i16.o
+
+# target to build an object file
+aligner_swsse_loc_i16.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_loc_i16.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_loc_i16.cpp.o
+.PHONY : aligner_swsse_loc_i16.cpp.o
+
+aligner_swsse_loc_i16.i: aligner_swsse_loc_i16.cpp.i
+
+.PHONY : aligner_swsse_loc_i16.i
+
+# target to preprocess a source file
+aligner_swsse_loc_i16.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_loc_i16.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_loc_i16.cpp.i
+.PHONY : aligner_swsse_loc_i16.cpp.i
+
+aligner_swsse_loc_i16.s: aligner_swsse_loc_i16.cpp.s
+
+.PHONY : aligner_swsse_loc_i16.s
+
+# target to generate assembly for a file
+aligner_swsse_loc_i16.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_loc_i16.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_loc_i16.cpp.s
+.PHONY : aligner_swsse_loc_i16.cpp.s
+
+aligner_swsse_loc_u8.o: aligner_swsse_loc_u8.cpp.o
+
+.PHONY : aligner_swsse_loc_u8.o
+
+# target to build an object file
+aligner_swsse_loc_u8.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_loc_u8.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_loc_u8.cpp.o
+.PHONY : aligner_swsse_loc_u8.cpp.o
+
+aligner_swsse_loc_u8.i: aligner_swsse_loc_u8.cpp.i
+
+.PHONY : aligner_swsse_loc_u8.i
+
+# target to preprocess a source file
+aligner_swsse_loc_u8.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_loc_u8.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_loc_u8.cpp.i
+.PHONY : aligner_swsse_loc_u8.cpp.i
+
+aligner_swsse_loc_u8.s: aligner_swsse_loc_u8.cpp.s
+
+.PHONY : aligner_swsse_loc_u8.s
+
+# target to generate assembly for a file
+aligner_swsse_loc_u8.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aligner_swsse_loc_u8.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aligner_swsse_loc_u8.cpp.s
+.PHONY : aligner_swsse_loc_u8.cpp.s
+
+aln_sink.o: aln_sink.cpp.o
+
+.PHONY : aln_sink.o
+
+# target to build an object file
+aln_sink.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aln_sink.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aln_sink.cpp.o
+.PHONY : aln_sink.cpp.o
+
+aln_sink.i: aln_sink.cpp.i
+
+.PHONY : aln_sink.i
+
+# target to preprocess a source file
+aln_sink.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aln_sink.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aln_sink.cpp.i
+.PHONY : aln_sink.cpp.i
+
+aln_sink.s: aln_sink.cpp.s
+
+.PHONY : aln_sink.s
+
+# target to generate assembly for a file
+aln_sink.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/aln_sink.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/aln_sink.cpp.s
+.PHONY : aln_sink.cpp.s
+
+alphabet.o: alphabet.cpp.o
+
+.PHONY : alphabet.o
+
+# target to build an object file
+alphabet.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/alphabet.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/alphabet.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/alphabet.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/alphabet.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/alphabet.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/alphabet.cpp.o
+.PHONY : alphabet.cpp.o
+
+alphabet.i: alphabet.cpp.i
+
+.PHONY : alphabet.i
+
+# target to preprocess a source file
+alphabet.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/alphabet.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/alphabet.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/alphabet.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/alphabet.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/alphabet.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/alphabet.cpp.i
+.PHONY : alphabet.cpp.i
+
+alphabet.s: alphabet.cpp.s
+
+.PHONY : alphabet.s
+
+# target to generate assembly for a file
+alphabet.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/alphabet.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/alphabet.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/alphabet.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/alphabet.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/alphabet.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/alphabet.cpp.s
+.PHONY : alphabet.cpp.s
+
+bowtie_build_main.o: bowtie_build_main.cpp.o
+
+.PHONY : bowtie_build_main.o
+
+# target to build an object file
+bowtie_build_main.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bowtie_build_main.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bowtie_build_main.cpp.o
+.PHONY : bowtie_build_main.cpp.o
+
+bowtie_build_main.i: bowtie_build_main.cpp.i
+
+.PHONY : bowtie_build_main.i
+
+# target to preprocess a source file
+bowtie_build_main.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bowtie_build_main.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bowtie_build_main.cpp.i
+.PHONY : bowtie_build_main.cpp.i
+
+bowtie_build_main.s: bowtie_build_main.cpp.s
+
+.PHONY : bowtie_build_main.s
+
+# target to generate assembly for a file
+bowtie_build_main.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bowtie_build_main.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bowtie_build_main.cpp.s
+.PHONY : bowtie_build_main.cpp.s
+
+bowtie_main.o: bowtie_main.cpp.o
+
+.PHONY : bowtie_main.o
+
+# target to build an object file
+bowtie_main.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bowtie_main.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bowtie_main.cpp.o
+.PHONY : bowtie_main.cpp.o
+
+bowtie_main.i: bowtie_main.cpp.i
+
+.PHONY : bowtie_main.i
+
+# target to preprocess a source file
+bowtie_main.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bowtie_main.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bowtie_main.cpp.i
+.PHONY : bowtie_main.cpp.i
+
+bowtie_main.s: bowtie_main.cpp.s
+
+.PHONY : bowtie_main.s
+
+# target to generate assembly for a file
+bowtie_main.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bowtie_main.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bowtie_main.cpp.s
+.PHONY : bowtie_main.cpp.s
+
+bt2_build.o: bt2_build.cpp.o
+
+.PHONY : bt2_build.o
+
+# target to build an object file
+bt2_build.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_build.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_build.cpp.o
+.PHONY : bt2_build.cpp.o
+
+bt2_build.i: bt2_build.cpp.i
+
+.PHONY : bt2_build.i
+
+# target to preprocess a source file
+bt2_build.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_build.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_build.cpp.i
+.PHONY : bt2_build.cpp.i
+
+bt2_build.s: bt2_build.cpp.s
+
+.PHONY : bt2_build.s
+
+# target to generate assembly for a file
+bt2_build.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_build.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_build.cpp.s
+.PHONY : bt2_build.cpp.s
+
+bt2_idx.o: bt2_idx.cpp.o
+
+.PHONY : bt2_idx.o
+
+# target to build an object file
+bt2_idx.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_idx.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_idx.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_idx.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_idx.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_idx.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_idx.cpp.o
+.PHONY : bt2_idx.cpp.o
+
+bt2_idx.i: bt2_idx.cpp.i
+
+.PHONY : bt2_idx.i
+
+# target to preprocess a source file
+bt2_idx.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_idx.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_idx.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_idx.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_idx.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_idx.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_idx.cpp.i
+.PHONY : bt2_idx.cpp.i
+
+bt2_idx.s: bt2_idx.cpp.s
+
+.PHONY : bt2_idx.s
+
+# target to generate assembly for a file
+bt2_idx.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_idx.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_idx.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_idx.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_idx.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_idx.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_idx.cpp.s
+.PHONY : bt2_idx.cpp.s
+
+bt2_inspect.o: bt2_inspect.cpp.o
+
+.PHONY : bt2_inspect.o
+
+# target to build an object file
+bt2_inspect.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_inspect.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_inspect.cpp.o
+.PHONY : bt2_inspect.cpp.o
+
+bt2_inspect.i: bt2_inspect.cpp.i
+
+.PHONY : bt2_inspect.i
+
+# target to preprocess a source file
+bt2_inspect.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_inspect.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_inspect.cpp.i
+.PHONY : bt2_inspect.cpp.i
+
+bt2_inspect.s: bt2_inspect.cpp.s
+
+.PHONY : bt2_inspect.s
+
+# target to generate assembly for a file
+bt2_inspect.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_inspect.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_inspect.cpp.s
+.PHONY : bt2_inspect.cpp.s
+
+bt2_io.o: bt2_io.cpp.o
+
+.PHONY : bt2_io.o
+
+# target to build an object file
+bt2_io.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_io.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_io.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_io.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_io.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_io.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_io.cpp.o
+.PHONY : bt2_io.cpp.o
+
+bt2_io.i: bt2_io.cpp.i
+
+.PHONY : bt2_io.i
+
+# target to preprocess a source file
+bt2_io.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_io.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_io.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_io.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_io.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_io.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_io.cpp.i
+.PHONY : bt2_io.cpp.i
+
+bt2_io.s: bt2_io.cpp.s
+
+.PHONY : bt2_io.s
+
+# target to generate assembly for a file
+bt2_io.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_io.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_io.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_io.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_io.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_io.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_io.cpp.s
+.PHONY : bt2_io.cpp.s
+
+bt2_search.o: bt2_search.cpp.o
+
+.PHONY : bt2_search.o
+
+# target to build an object file
+bt2_search.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_search.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_search.cpp.o
+.PHONY : bt2_search.cpp.o
+
+bt2_search.i: bt2_search.cpp.i
+
+.PHONY : bt2_search.i
+
+# target to preprocess a source file
+bt2_search.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_search.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_search.cpp.i
+.PHONY : bt2_search.cpp.i
+
+bt2_search.s: bt2_search.cpp.s
+
+.PHONY : bt2_search.s
+
+# target to generate assembly for a file
+bt2_search.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_search.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_search.cpp.s
+.PHONY : bt2_search.cpp.s
+
+bt2_util.o: bt2_util.cpp.o
+
+.PHONY : bt2_util.o
+
+# target to build an object file
+bt2_util.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_util.cpp.o
+.PHONY : bt2_util.cpp.o
+
+bt2_util.i: bt2_util.cpp.i
+
+.PHONY : bt2_util.i
+
+# target to preprocess a source file
+bt2_util.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_util.cpp.i
+.PHONY : bt2_util.cpp.i
+
+bt2_util.s: bt2_util.cpp.s
+
+.PHONY : bt2_util.s
+
+# target to generate assembly for a file
+bt2_util.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/bt2_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/bt2_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/bt2_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/bt2_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/bt2_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/bt2_util.cpp.s
+.PHONY : bt2_util.cpp.s
+
+ccnt_lut.o: ccnt_lut.cpp.o
+
+.PHONY : ccnt_lut.o
+
+# target to build an object file
+ccnt_lut.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ccnt_lut.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ccnt_lut.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ccnt_lut.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ccnt_lut.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ccnt_lut.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ccnt_lut.cpp.o
+.PHONY : ccnt_lut.cpp.o
+
+ccnt_lut.i: ccnt_lut.cpp.i
+
+.PHONY : ccnt_lut.i
+
+# target to preprocess a source file
+ccnt_lut.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ccnt_lut.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ccnt_lut.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ccnt_lut.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ccnt_lut.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ccnt_lut.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ccnt_lut.cpp.i
+.PHONY : ccnt_lut.cpp.i
+
+ccnt_lut.s: ccnt_lut.cpp.s
+
+.PHONY : ccnt_lut.s
+
+# target to generate assembly for a file
+ccnt_lut.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ccnt_lut.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ccnt_lut.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ccnt_lut.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ccnt_lut.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ccnt_lut.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ccnt_lut.cpp.s
+.PHONY : ccnt_lut.cpp.s
+
+diff_sample.o: diff_sample.cpp.o
+
+.PHONY : diff_sample.o
+
+# target to build an object file
+diff_sample.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/diff_sample.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/diff_sample.cpp.o
+.PHONY : diff_sample.cpp.o
+
+diff_sample.i: diff_sample.cpp.i
+
+.PHONY : diff_sample.i
+
+# target to preprocess a source file
+diff_sample.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/diff_sample.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/diff_sample.cpp.i
+.PHONY : diff_sample.cpp.i
+
+diff_sample.s: diff_sample.cpp.s
+
+.PHONY : diff_sample.s
+
+# target to generate assembly for a file
+diff_sample.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/diff_sample.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/diff_sample.cpp.s
+.PHONY : diff_sample.cpp.s
+
+dp_framer.o: dp_framer.cpp.o
+
+.PHONY : dp_framer.o
+
+# target to build an object file
+dp_framer.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/dp_framer.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/dp_framer.cpp.o
+.PHONY : dp_framer.cpp.o
+
+dp_framer.i: dp_framer.cpp.i
+
+.PHONY : dp_framer.i
+
+# target to preprocess a source file
+dp_framer.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/dp_framer.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/dp_framer.cpp.i
+.PHONY : dp_framer.cpp.i
+
+dp_framer.s: dp_framer.cpp.s
+
+.PHONY : dp_framer.s
+
+# target to generate assembly for a file
+dp_framer.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/dp_framer.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/dp_framer.cpp.s
+.PHONY : dp_framer.cpp.s
+
+ds.o: ds.cpp.o
+
+.PHONY : ds.o
+
+# target to build an object file
+ds.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ds.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ds.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ds.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ds.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ds.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ds.cpp.o
+.PHONY : ds.cpp.o
+
+ds.i: ds.cpp.i
+
+.PHONY : ds.i
+
+# target to preprocess a source file
+ds.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ds.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ds.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ds.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ds.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ds.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ds.cpp.i
+.PHONY : ds.cpp.i
+
+ds.s: ds.cpp.s
+
+.PHONY : ds.s
+
+# target to generate assembly for a file
+ds.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ds.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ds.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ds.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ds.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ds.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ds.cpp.s
+.PHONY : ds.cpp.s
+
+edit.o: edit.cpp.o
+
+.PHONY : edit.o
+
+# target to build an object file
+edit.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/edit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/edit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/edit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/edit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/edit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/edit.cpp.o
+.PHONY : edit.cpp.o
+
+edit.i: edit.cpp.i
+
+.PHONY : edit.i
+
+# target to preprocess a source file
+edit.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/edit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/edit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/edit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/edit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/edit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/edit.cpp.i
+.PHONY : edit.cpp.i
+
+edit.s: edit.cpp.s
+
+.PHONY : edit.s
+
+# target to generate assembly for a file
+edit.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/edit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/edit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/edit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/edit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/edit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/edit.cpp.s
+.PHONY : edit.cpp.s
+
+limit.o: limit.cpp.o
+
+.PHONY : limit.o
+
+# target to build an object file
+limit.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/limit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/limit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/limit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/limit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/limit.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/limit.cpp.o
+.PHONY : limit.cpp.o
+
+limit.i: limit.cpp.i
+
+.PHONY : limit.i
+
+# target to preprocess a source file
+limit.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/limit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/limit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/limit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/limit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/limit.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/limit.cpp.i
+.PHONY : limit.cpp.i
+
+limit.s: limit.cpp.s
+
+.PHONY : limit.s
+
+# target to generate assembly for a file
+limit.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/limit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/limit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/limit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/limit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/limit.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/limit.cpp.s
+.PHONY : limit.cpp.s
+
+mask.o: mask.cpp.o
+
+.PHONY : mask.o
+
+# target to build an object file
+mask.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/mask.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/mask.cpp.o
+.PHONY : mask.cpp.o
+
+mask.i: mask.cpp.i
+
+.PHONY : mask.i
+
+# target to preprocess a source file
+mask.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/mask.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/mask.cpp.i
+.PHONY : mask.cpp.i
+
+mask.s: mask.cpp.s
+
+.PHONY : mask.s
+
+# target to generate assembly for a file
+mask.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/mask.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/mask.cpp.s
+.PHONY : mask.cpp.s
+
+multikey_qsort.o: multikey_qsort.cpp.o
+
+.PHONY : multikey_qsort.o
+
+# target to build an object file
+multikey_qsort.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/multikey_qsort.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/multikey_qsort.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/multikey_qsort.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/multikey_qsort.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/multikey_qsort.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/multikey_qsort.cpp.o
+.PHONY : multikey_qsort.cpp.o
+
+multikey_qsort.i: multikey_qsort.cpp.i
+
+.PHONY : multikey_qsort.i
+
+# target to preprocess a source file
+multikey_qsort.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/multikey_qsort.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/multikey_qsort.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/multikey_qsort.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/multikey_qsort.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/multikey_qsort.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/multikey_qsort.cpp.i
+.PHONY : multikey_qsort.cpp.i
+
+multikey_qsort.s: multikey_qsort.cpp.s
+
+.PHONY : multikey_qsort.s
+
+# target to generate assembly for a file
+multikey_qsort.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/multikey_qsort.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/multikey_qsort.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/multikey_qsort.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/multikey_qsort.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/multikey_qsort.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/multikey_qsort.cpp.s
+.PHONY : multikey_qsort.cpp.s
+
+outq.o: outq.cpp.o
+
+.PHONY : outq.o
+
+# target to build an object file
+outq.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/outq.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/outq.cpp.o
+.PHONY : outq.cpp.o
+
+outq.i: outq.cpp.i
+
+.PHONY : outq.i
+
+# target to preprocess a source file
+outq.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/outq.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/outq.cpp.i
+.PHONY : outq.cpp.i
+
+outq.s: outq.cpp.s
+
+.PHONY : outq.s
+
+# target to generate assembly for a file
+outq.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/outq.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/outq.cpp.s
+.PHONY : outq.cpp.s
+
+pat.o: pat.cpp.o
+
+.PHONY : pat.o
+
+# target to build an object file
+pat.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/pat.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/pat.cpp.o
+.PHONY : pat.cpp.o
+
+pat.i: pat.cpp.i
+
+.PHONY : pat.i
+
+# target to preprocess a source file
+pat.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/pat.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/pat.cpp.i
+.PHONY : pat.cpp.i
+
+pat.s: pat.cpp.s
+
+.PHONY : pat.s
+
+# target to generate assembly for a file
+pat.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/pat.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/pat.cpp.s
+.PHONY : pat.cpp.s
+
+pe.o: pe.cpp.o
+
+.PHONY : pe.o
+
+# target to build an object file
+pe.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/pe.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/pe.cpp.o
+.PHONY : pe.cpp.o
+
+pe.i: pe.cpp.i
+
+.PHONY : pe.i
+
+# target to preprocess a source file
+pe.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/pe.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/pe.cpp.i
+.PHONY : pe.cpp.i
+
+pe.s: pe.cpp.s
+
+.PHONY : pe.s
+
+# target to generate assembly for a file
+pe.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/pe.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/pe.cpp.s
+.PHONY : pe.cpp.s
+
+presets.o: presets.cpp.o
+
+.PHONY : presets.o
+
+# target to build an object file
+presets.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/presets.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/presets.cpp.o
+.PHONY : presets.cpp.o
+
+presets.i: presets.cpp.i
+
+.PHONY : presets.i
+
+# target to preprocess a source file
+presets.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/presets.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/presets.cpp.i
+.PHONY : presets.cpp.i
+
+presets.s: presets.cpp.s
+
+.PHONY : presets.s
+
+# target to generate assembly for a file
+presets.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/presets.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/presets.cpp.s
+.PHONY : presets.cpp.s
+
+qual.o: qual.cpp.o
+
+.PHONY : qual.o
+
+# target to build an object file
+qual.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/qual.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/qual.cpp.o
+.PHONY : qual.cpp.o
+
+qual.i: qual.cpp.i
+
+.PHONY : qual.i
+
+# target to preprocess a source file
+qual.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/qual.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/qual.cpp.i
+.PHONY : qual.cpp.i
+
+qual.s: qual.cpp.s
+
+.PHONY : qual.s
+
+# target to generate assembly for a file
+qual.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/qual.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/qual.cpp.s
+.PHONY : qual.cpp.s
+
+random_source.o: random_source.cpp.o
+
+.PHONY : random_source.o
+
+# target to build an object file
+random_source.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/random_source.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/random_source.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/random_source.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/random_source.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/random_source.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/random_source.cpp.o
+.PHONY : random_source.cpp.o
+
+random_source.i: random_source.cpp.i
+
+.PHONY : random_source.i
+
+# target to preprocess a source file
+random_source.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/random_source.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/random_source.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/random_source.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/random_source.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/random_source.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/random_source.cpp.i
+.PHONY : random_source.cpp.i
+
+random_source.s: random_source.cpp.s
+
+.PHONY : random_source.s
+
+# target to generate assembly for a file
+random_source.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/random_source.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/random_source.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/random_source.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/random_source.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/random_source.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/random_source.cpp.s
+.PHONY : random_source.cpp.s
+
+random_util.o: random_util.cpp.o
+
+.PHONY : random_util.o
+
+# target to build an object file
+random_util.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/random_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/random_util.cpp.o
+.PHONY : random_util.cpp.o
+
+random_util.i: random_util.cpp.i
+
+.PHONY : random_util.i
+
+# target to preprocess a source file
+random_util.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/random_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/random_util.cpp.i
+.PHONY : random_util.cpp.i
+
+random_util.s: random_util.cpp.s
+
+.PHONY : random_util.s
+
+# target to generate assembly for a file
+random_util.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/random_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/random_util.cpp.s
+.PHONY : random_util.cpp.s
+
+read_qseq.o: read_qseq.cpp.o
+
+.PHONY : read_qseq.o
+
+# target to build an object file
+read_qseq.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/read_qseq.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/read_qseq.cpp.o
+.PHONY : read_qseq.cpp.o
+
+read_qseq.i: read_qseq.cpp.i
+
+.PHONY : read_qseq.i
+
+# target to preprocess a source file
+read_qseq.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/read_qseq.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/read_qseq.cpp.i
+.PHONY : read_qseq.cpp.i
+
+read_qseq.s: read_qseq.cpp.s
+
+.PHONY : read_qseq.s
+
+# target to generate assembly for a file
+read_qseq.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/read_qseq.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/read_qseq.cpp.s
+.PHONY : read_qseq.cpp.s
+
+ref_coord.o: ref_coord.cpp.o
+
+.PHONY : ref_coord.o
+
+# target to build an object file
+ref_coord.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ref_coord.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ref_coord.cpp.o
+.PHONY : ref_coord.cpp.o
+
+ref_coord.i: ref_coord.cpp.i
+
+.PHONY : ref_coord.i
+
+# target to preprocess a source file
+ref_coord.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ref_coord.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ref_coord.cpp.i
+.PHONY : ref_coord.cpp.i
+
+ref_coord.s: ref_coord.cpp.s
+
+.PHONY : ref_coord.s
+
+# target to generate assembly for a file
+ref_coord.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ref_coord.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ref_coord.cpp.s
+.PHONY : ref_coord.cpp.s
+
+ref_read.o: ref_read.cpp.o
+
+.PHONY : ref_read.o
+
+# target to build an object file
+ref_read.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ref_read.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ref_read.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ref_read.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ref_read.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ref_read.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ref_read.cpp.o
+.PHONY : ref_read.cpp.o
+
+ref_read.i: ref_read.cpp.i
+
+.PHONY : ref_read.i
+
+# target to preprocess a source file
+ref_read.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ref_read.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ref_read.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ref_read.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ref_read.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ref_read.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ref_read.cpp.i
+.PHONY : ref_read.cpp.i
+
+ref_read.s: ref_read.cpp.s
+
+.PHONY : ref_read.s
+
+# target to generate assembly for a file
+ref_read.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/ref_read.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/ref_read.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/ref_read.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/ref_read.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/ref_read.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/ref_read.cpp.s
+.PHONY : ref_read.cpp.s
+
+reference.o: reference.cpp.o
+
+.PHONY : reference.o
+
+# target to build an object file
+reference.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/reference.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/reference.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/reference.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/reference.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/reference.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/reference.cpp.o
+.PHONY : reference.cpp.o
+
+reference.i: reference.cpp.i
+
+.PHONY : reference.i
+
+# target to preprocess a source file
+reference.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/reference.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/reference.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/reference.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/reference.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/reference.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/reference.cpp.i
+.PHONY : reference.cpp.i
+
+reference.s: reference.cpp.s
+
+.PHONY : reference.s
+
+# target to generate assembly for a file
+reference.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/reference.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/reference.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/reference.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/reference.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/reference.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/reference.cpp.s
+.PHONY : reference.cpp.s
+
+sam.o: sam.cpp.o
+
+.PHONY : sam.o
+
+# target to build an object file
+sam.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/sam.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/sam.cpp.o
+.PHONY : sam.cpp.o
+
+sam.i: sam.cpp.i
+
+.PHONY : sam.i
+
+# target to preprocess a source file
+sam.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/sam.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/sam.cpp.i
+.PHONY : sam.cpp.i
+
+sam.s: sam.cpp.s
+
+.PHONY : sam.s
+
+# target to generate assembly for a file
+sam.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/sam.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/sam.cpp.s
+.PHONY : sam.cpp.s
+
+scoring.o: scoring.cpp.o
+
+.PHONY : scoring.o
+
+# target to build an object file
+scoring.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/scoring.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/scoring.cpp.o
+.PHONY : scoring.cpp.o
+
+scoring.i: scoring.cpp.i
+
+.PHONY : scoring.i
+
+# target to preprocess a source file
+scoring.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/scoring.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/scoring.cpp.i
+.PHONY : scoring.cpp.i
+
+scoring.s: scoring.cpp.s
+
+.PHONY : scoring.s
+
+# target to generate assembly for a file
+scoring.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/scoring.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/scoring.cpp.s
+.PHONY : scoring.cpp.s
+
+shmem.o: shmem.cpp.o
+
+.PHONY : shmem.o
+
+# target to build an object file
+shmem.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/shmem.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/shmem.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/shmem.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/shmem.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/shmem.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/shmem.cpp.o
+.PHONY : shmem.cpp.o
+
+shmem.i: shmem.cpp.i
+
+.PHONY : shmem.i
+
+# target to preprocess a source file
+shmem.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/shmem.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/shmem.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/shmem.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/shmem.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/shmem.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/shmem.cpp.i
+.PHONY : shmem.cpp.i
+
+shmem.s: shmem.cpp.s
+
+.PHONY : shmem.s
+
+# target to generate assembly for a file
+shmem.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-l.dir/build.make CMakeFiles/bowtie2-inspect-l.dir/shmem.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-l.dir/build.make CMakeFiles/bowtie2-build-l.dir/shmem.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-build-s.dir/build.make CMakeFiles/bowtie2-build-s.dir/shmem.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/shmem.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-inspect-s.dir/build.make CMakeFiles/bowtie2-inspect-s.dir/shmem.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/shmem.cpp.s
+.PHONY : shmem.cpp.s
+
+simple_func.o: simple_func.cpp.o
+
+.PHONY : simple_func.o
+
+# target to build an object file
+simple_func.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/simple_func.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/simple_func.cpp.o
+.PHONY : simple_func.cpp.o
+
+simple_func.i: simple_func.cpp.i
+
+.PHONY : simple_func.i
+
+# target to preprocess a source file
+simple_func.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/simple_func.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/simple_func.cpp.i
+.PHONY : simple_func.cpp.i
+
+simple_func.s: simple_func.cpp.s
+
+.PHONY : simple_func.s
+
+# target to generate assembly for a file
+simple_func.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/simple_func.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/simple_func.cpp.s
+.PHONY : simple_func.cpp.s
+
+sse_util.o: sse_util.cpp.o
+
+.PHONY : sse_util.o
+
+# target to build an object file
+sse_util.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/sse_util.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/sse_util.cpp.o
+.PHONY : sse_util.cpp.o
+
+sse_util.i: sse_util.cpp.i
+
+.PHONY : sse_util.i
+
+# target to preprocess a source file
+sse_util.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/sse_util.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/sse_util.cpp.i
+.PHONY : sse_util.cpp.i
+
+sse_util.s: sse_util.cpp.s
+
+.PHONY : sse_util.s
+
+# target to generate assembly for a file
+sse_util.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/sse_util.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/sse_util.cpp.s
+.PHONY : sse_util.cpp.s
+
+unique.o: unique.cpp.o
+
+.PHONY : unique.o
+
+# target to build an object file
+unique.cpp.o:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/unique.cpp.o
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/unique.cpp.o
+.PHONY : unique.cpp.o
+
+unique.i: unique.cpp.i
+
+.PHONY : unique.i
+
+# target to preprocess a source file
+unique.cpp.i:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/unique.cpp.i
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/unique.cpp.i
+.PHONY : unique.cpp.i
+
+unique.s: unique.cpp.s
+
+.PHONY : unique.s
+
+# target to generate assembly for a file
+unique.cpp.s:
+	$(MAKE) -f CMakeFiles/bowtie2-align-l.dir/build.make CMakeFiles/bowtie2-align-l.dir/unique.cpp.s
+	$(MAKE) -f CMakeFiles/bowtie2-align-s.dir/build.make CMakeFiles/bowtie2-align-s.dir/unique.cpp.s
+.PHONY : unique.cpp.s
+
+# Help Target
+help:
+	@echo "The following are some of the valid targets for this Makefile:"
+	@echo "... all (the default if no target is provided)"
+	@echo "... clean"
+	@echo "... depend"
+	@echo "... edit_cache"
+	@echo "... rebuild_cache"
+	@echo "... bowtie2-inspect-l"
+	@echo "... bowtie2-build-l"
+	@echo "... bowtie2-build-s"
+	@echo "... ContinuousSubmit"
+	@echo "... ContinuousCoverage"
+	@echo "... ContinuousTest"
+	@echo "... ContinuousBuild"
+	@echo "... ContinuousMemCheck"
+	@echo "... Nightly"
+	@echo "... NightlyTest"
+	@echo "... bowtie2-align-l"
+	@echo "... NightlyUpdate"
+	@echo "... Continuous"
+	@echo "... NightlyBuild"
+	@echo "... NightlyStart"
+	@echo "... NightlyMemoryCheck"
+	@echo "... NightlyMemCheck"
+	@echo "... ExperimentalStart"
+	@echo "... bowtie2-inspect-s"
+	@echo "... ContinuousConfigure"
+	@echo "... NightlyCoverage"
+	@echo "... ExperimentalUpdate"
+	@echo "... test"
+	@echo "... ExperimentalConfigure"
+	@echo "... bowtie2-align-s"
+	@echo "... ExperimentalCoverage"
+	@echo "... ExperimentalBuild"
+	@echo "... NightlyConfigure"
+	@echo "... ExperimentalTest"
+	@echo "... ExperimentalMemCheck"
+	@echo "... Experimental"
+	@echo "... NightlySubmit"
+	@echo "... ExperimentalSubmit"
+	@echo "... ContinuousStart"
+	@echo "... ContinuousUpdate"
+	@echo "... aligner_bt.o"
+	@echo "... aligner_bt.i"
+	@echo "... aligner_bt.s"
+	@echo "... aligner_cache.o"
+	@echo "... aligner_cache.i"
+	@echo "... aligner_cache.s"
+	@echo "... aligner_driver.o"
+	@echo "... aligner_driver.i"
+	@echo "... aligner_driver.s"
+	@echo "... aligner_result.o"
+	@echo "... aligner_result.i"
+	@echo "... aligner_result.s"
+	@echo "... aligner_seed.o"
+	@echo "... aligner_seed.i"
+	@echo "... aligner_seed.s"
+	@echo "... aligner_seed2.o"
+	@echo "... aligner_seed2.i"
+	@echo "... aligner_seed2.s"
+	@echo "... aligner_seed_policy.o"
+	@echo "... aligner_seed_policy.i"
+	@echo "... aligner_seed_policy.s"
+	@echo "... aligner_sw.o"
+	@echo "... aligner_sw.i"
+	@echo "... aligner_sw.s"
+	@echo "... aligner_sw_driver.o"
+	@echo "... aligner_sw_driver.i"
+	@echo "... aligner_sw_driver.s"
+	@echo "... aligner_swsse.o"
+	@echo "... aligner_swsse.i"
+	@echo "... aligner_swsse.s"
+	@echo "... aligner_swsse_ee_i16.o"
+	@echo "... aligner_swsse_ee_i16.i"
+	@echo "... aligner_swsse_ee_i16.s"
+	@echo "... aligner_swsse_ee_u8.o"
+	@echo "... aligner_swsse_ee_u8.i"
+	@echo "... aligner_swsse_ee_u8.s"
+	@echo "... aligner_swsse_loc_i16.o"
+	@echo "... aligner_swsse_loc_i16.i"
+	@echo "... aligner_swsse_loc_i16.s"
+	@echo "... aligner_swsse_loc_u8.o"
+	@echo "... aligner_swsse_loc_u8.i"
+	@echo "... aligner_swsse_loc_u8.s"
+	@echo "... aln_sink.o"
+	@echo "... aln_sink.i"
+	@echo "... aln_sink.s"
+	@echo "... alphabet.o"
+	@echo "... alphabet.i"
+	@echo "... alphabet.s"
+	@echo "... bowtie_build_main.o"
+	@echo "... bowtie_build_main.i"
+	@echo "... bowtie_build_main.s"
+	@echo "... bowtie_main.o"
+	@echo "... bowtie_main.i"
+	@echo "... bowtie_main.s"
+	@echo "... bt2_build.o"
+	@echo "... bt2_build.i"
+	@echo "... bt2_build.s"
+	@echo "... bt2_idx.o"
+	@echo "... bt2_idx.i"
+	@echo "... bt2_idx.s"
+	@echo "... bt2_inspect.o"
+	@echo "... bt2_inspect.i"
+	@echo "... bt2_inspect.s"
+	@echo "... bt2_io.o"
+	@echo "... bt2_io.i"
+	@echo "... bt2_io.s"
+	@echo "... bt2_search.o"
+	@echo "... bt2_search.i"
+	@echo "... bt2_search.s"
+	@echo "... bt2_util.o"
+	@echo "... bt2_util.i"
+	@echo "... bt2_util.s"
+	@echo "... ccnt_lut.o"
+	@echo "... ccnt_lut.i"
+	@echo "... ccnt_lut.s"
+	@echo "... diff_sample.o"
+	@echo "... diff_sample.i"
+	@echo "... diff_sample.s"
+	@echo "... dp_framer.o"
+	@echo "... dp_framer.i"
+	@echo "... dp_framer.s"
+	@echo "... ds.o"
+	@echo "... ds.i"
+	@echo "... ds.s"
+	@echo "... edit.o"
+	@echo "... edit.i"
+	@echo "... edit.s"
+	@echo "... limit.o"
+	@echo "... limit.i"
+	@echo "... limit.s"
+	@echo "... mask.o"
+	@echo "... mask.i"
+	@echo "... mask.s"
+	@echo "... multikey_qsort.o"
+	@echo "... multikey_qsort.i"
+	@echo "... multikey_qsort.s"
+	@echo "... outq.o"
+	@echo "... outq.i"
+	@echo "... outq.s"
+	@echo "... pat.o"
+	@echo "... pat.i"
+	@echo "... pat.s"
+	@echo "... pe.o"
+	@echo "... pe.i"
+	@echo "... pe.s"
+	@echo "... presets.o"
+	@echo "... presets.i"
+	@echo "... presets.s"
+	@echo "... qual.o"
+	@echo "... qual.i"
+	@echo "... qual.s"
+	@echo "... random_source.o"
+	@echo "... random_source.i"
+	@echo "... random_source.s"
+	@echo "... random_util.o"
+	@echo "... random_util.i"
+	@echo "... random_util.s"
+	@echo "... read_qseq.o"
+	@echo "... read_qseq.i"
+	@echo "... read_qseq.s"
+	@echo "... ref_coord.o"
+	@echo "... ref_coord.i"
+	@echo "... ref_coord.s"
+	@echo "... ref_read.o"
+	@echo "... ref_read.i"
+	@echo "... ref_read.s"
+	@echo "... reference.o"
+	@echo "... reference.i"
+	@echo "... reference.s"
+	@echo "... sam.o"
+	@echo "... sam.i"
+	@echo "... sam.s"
+	@echo "... scoring.o"
+	@echo "... scoring.i"
+	@echo "... scoring.s"
+	@echo "... shmem.o"
+	@echo "... shmem.i"
+	@echo "... shmem.s"
+	@echo "... simple_func.o"
+	@echo "... simple_func.i"
+	@echo "... simple_func.s"
+	@echo "... sse_util.o"
+	@echo "... sse_util.i"
+	@echo "... sse_util.s"
+	@echo "... unique.o"
+	@echo "... unique.i"
+	@echo "... unique.s"
+.PHONY : help
+
+
+
+#=============================================================================
+# Special targets to cleanup operation of make.
+
+# Special rule to run CMake to check the build system integrity.
+# No rule that depends on this can have commands that come from listfiles
+# because they might be regenerated.
+cmake_check_build_system:
+	$(CMAKE_COMMAND) -H$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
+.PHONY : cmake_check_build_system
+
