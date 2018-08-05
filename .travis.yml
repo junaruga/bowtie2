@@ -1,3 +1,4 @@
+dist: trusty
 sudo: true
 git:
   depth: 1
@@ -9,16 +10,41 @@ matrix:
     compiler: clang
   - language: c++
     compiler: gcc
+  # How to use gcc-5, gcc-6, gcc-7
+  # https://docs.travis-ci.com/user/languages/c/
+  - language: c++
+    compiler: gcc-5
+    addons:
+      apt:
+        sources:
+        - ubuntu-toolchain-r-test
+        packages:
+        - g++-5
+    env:
+    - MATRIX_EVAL="CC=gcc-5 && CXX=g++-5"
+  - language: c++
+    compiler: gcc-7
+    addons:
+      apt:
+        sources:
+        - ubuntu-toolchain-r-test
+        packages:
+        - g++-7
+    env:
+    - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
   # https://docs.travis-ci.com/user/languages/perl/
-  - language: perl
-    perl: "5.26"
+  # - language: perl
+  #   perl: "5.26"
   # https://docs.travis-ci.com/user/languages/python/
-  - language: python
-    python: "3.6"
-  - language: python
-    python: "pypy3.5"
-  - language: python
-    python: "pypy2.7"
+  #- language: python
+  #  python: "3.6"
+  #- language: python
+  #  python: "pypy3.5"
+  - os: osx
+    osx_image: xcode8
+    language: c++
+    env:
+    - MATRIX_EVAL="brew install gcc && CC=gcc-7 && CXX=g++-7"
 cache: apt
 addons:
   apt:
@@ -33,7 +59,7 @@ addons:
 #  - batch_parsing_output
 #  - blocked_input
 #  - bug_fixes
-install: true
+install: eval "${MATRIX_EVAL}"
 script: make allall && make simple-test
 # notifications:
 #   slack:
