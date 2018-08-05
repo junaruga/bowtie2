@@ -1,22 +1,38 @@
 sudo: true
-language: c++
-compiler:
-- clang
-- gcc
+git:
+  depth: 1
+language: generic
+matrix:
+  include:
+  # https://docs.travis-ci.com/user/languages/cpp/
+  - language: c++
+    compiler: clang
+  - language: c++
+    compiler: gcc
+  # https://docs.travis-ci.com/user/languages/perl/
+  - language: perl
+    perl: "5.26"
+  # https://docs.travis-ci.com/user/languages/python/
+  - language: python
+    python: "3.6"
+  - language: python
+    python: "pypy3.5"
+  - language: python
+    python: "pypy2.7"
 cache: apt
 addons:
   apt:
     packages:
     - libtbb-dev
-branches:
-  only:
-  - master
-  - cleaner_parsing
-  - scaling-old-parsing
-  - batch_parsing
-  - batch_parsing_output
-  - blocked_input
-  - bug_fixes
+#branches:
+#  only:
+#  - master
+#  - cleaner_parsing
+#  - scaling-old-parsing
+#  - batch_parsing
+#  - batch_parsing_output
+#  - blocked_input
+#  - bug_fixes
 script: make allall && make simple-test
 notifications:
   slack:
