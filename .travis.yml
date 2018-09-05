@@ -1,22 +1,36 @@
 sudo: required
-language: c++
-compiler:
-- clang
-- gcc
+language: generic
+matrix:
+  include:
+  - language: c++
+    compiler: clang
+  - language: c++
+    compiler: gcc
+  - addons:
+      apt:
+        sources:
+        - ubuntu-toolchain-r-test
+        packages:
+        - gcc-8
+        - g++-8
+        - libtbb-dev
+    env:
+    - CC=gcc-8 CXX=g++-8
+    - CXXFLAGS="-fuse-ld=gold"
 cache: apt
 addons:
   apt:
     packages:
     - libtbb-dev
-branches:
-  only:
-  - master
-  - cleaner_parsing
-  - scaling-old-parsing
-  - batch_parsing
-  - batch_parsing_output
-  - blocked_input
-  - bug_fixes
+# branches:
+#   only:
+#   - master
+#   - cleaner_parsing
+#   - scaling-old-parsing
+#   - batch_parsing
+#   - batch_parsing_output
+#   - blocked_input
+#   - bug_fixes
 script: make allall && make simple-test
 notifications:
   slack:
