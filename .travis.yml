@@ -6,7 +6,9 @@ matrix:
     compiler: clang
   - language: c++
     compiler: gcc
-  - addons:
+  - language: python
+    python: "3.6"
+    addons:
       apt:
         sources:
         - ubuntu-toolchain-r-test
@@ -17,6 +19,14 @@ matrix:
     env:
     - CC=gcc-8 CXX=g++-8
     - CXXFLAGS="-fuse-ld=gold"
+  - language: python
+    python: pypy3
+    # Add light weight tests only to check validation of the Python.
+    # - script: make python-test
+  - language: python
+    python: pypy
+    # Add light weight tests only to check validation of the Python.
+    # - script: make python-test
 cache: apt
 addons:
   apt:
