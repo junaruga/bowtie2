@@ -17,6 +17,26 @@ branches:
   - batch_parsing_output
   - blocked_input
   - bug_fixes
+matrix:
+  include:
+  # aarch64 - ARM 64-bit
+  - name: aarch64
+    compiler: gcc
+    env:
+    - ARCH=arm64
+    install: |
+      docker run --rm --privileged \
+        multiarch/qemu-user-static:register --reset && \
+        docker build --rm -t bowtie2 .
+    script: |
+      docker run --rm -t \
+        -e CXX=${CXX} \
+        -e CC=${CC} \
+        bowtie2
+    # Set "if" element to avoid run the job for a pull-request.
+    # if: type = cron OR env(CI_CRON) = 1
+  allow_failures:
+  - name: aarch64
 script: make allall && make simple-test
 notifications:
   slack:
