@@ -174,6 +174,9 @@ endif
 ifeq (amd64,$(shell uname -m))
 	BITS := 64
 endif
+ifeq (aarch64,$(shell uname -m))
+	BITS := 64
+endif
 # msys will always be 32 bit so look at the cpu arch instead.
 ifneq (,$(findstring AMD64,$(PROCESSOR_ARCHITEW6432)))
 	ifeq (1,$(MINGW))
@@ -185,9 +188,14 @@ ifeq (32,$(BITS))
 endif
 
 SSE_FLAG := -msse2
+M64_FLAG := -m64
+ifeq (aarch64,$(shell uname -m))
+	SSE_FLAG =
+	M64_FLAG =
+endif
 
-DEBUG_FLAGS    := -O0 -g3 -m64 $(SSE_FLAG)
-RELEASE_FLAGS  := -O3 -m64 $(SSE_FLAG) -funroll-loops -g3
+DEBUG_FLAGS    := -O0 -g3 $(M64_FLAG) $(SSE_FLAG)
+RELEASE_FLAGS  := -O3 $(M64_FLAG) $(SSE_FLAG) -funroll-loops -g3
 NOASSERT_FLAGS := -DNDEBUG
 FILE_FLAGS     := -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE
 DEBUG_DEFS     = -DCOMPILER_OPTIONS="\"$(DEBUG_FLAGS) $(CXXFLAGS)\""
