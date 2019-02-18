@@ -21,13 +21,18 @@ matrix:
   include:
   # aarch64 - ARM 64-bit
   - name: aarch64
-    install: |
-      docker run --rm --privileged \
-        multiarch/qemu-user-static:register --reset && \
-        docker build --rm -t bowtie2 -f Dockerfile-aarch64 .
-    script: docker run --rm -t bowtie2
-  allow_failures:
-  - name: aarch64
+    install:
+    - docker run --rm --privileged multiarch/qemu-user-static:register --reset
+    - docker build --rm -t bowtie2 -f Dockerfile-aarch64 .
+    script:
+    # Ping stdout every 9 minutes or Travis kills build,
+    # while travis_wait does not show the command output while processing.
+    # https://docs.travis-ci.com/user/common-build-problems/#build-times-out-because-no-output-was-received
+    - |
+      while sleep 9m; do
+          echo "=====[ $SECONDS seconds still running ]====="
+      done &
+    - docker run --rm -e NO_TBB=1 -e POPCNT_CAPABILITY=0 -t bowtie2 make allall simple-test
 script: make allall && make simple-test
 notifications:
   slack:

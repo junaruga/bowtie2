@@ -30,7 +30,18 @@ GCC_SUFFIX :=
 CC ?= $(GCC_PREFIX)/gcc$(GCC_SUFFIX)
 CPP ?= $(GCC_PREFIX)/g++$(GCC_SUFFIX)
 CXX ?= $(CPP)
-CXXFLAGS += -std=c++98
+ifeq (aarch64,$(shell uname -m))
+	CXXFLAGS += -std=c++11 \
+              -fopenmp-simd \
+              -Wno-narrowing \
+              -Wno-deprecated-declarations \
+              -Wno-unused-function \
+              -Wno-misleading-indentation \
+              -DWITH_AARCH64
+	CPPFLAGS += -Ithird_party/simde
+else
+	CXXFLAGS += -std=c++98
+endif
 
 HEADERS := $(wildcard *.h)
 BOWTIE_MM := 1
