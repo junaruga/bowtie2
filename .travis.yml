@@ -32,7 +32,8 @@ matrix:
       while sleep 9m; do
           echo "=====[ $SECONDS seconds still running ]====="
       done &
-    - docker run --rm -e NO_TBB=1 -e POPCNT_CAPABILITY=0 -t bowtie2 make allall simple-test
+    # Run make all while make allall exceeds the maximum time lint (50 minutes).
+    - docker run --rm -e NO_TBB=1 -e POPCNT_CAPABILITY=0 -t bowtie2 make -s -j 4 all simple-test
 script: make allall && make simple-test
 notifications:
   slack:
