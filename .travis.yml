@@ -37,7 +37,7 @@ matrix:
     # Run "make all" while "make allall simple-test" exceeds the Travis maximum time limit
     # (50 minutes).
     # - docker run --rm -e CXXFLAGS="$CXXFLAGS" NO_TBB=1 -e POPCNT_CAPABILITY=0 -t bowtie2 make -s -j 4 all
-    - docker run --rm -e CXXFLAGS="$CXXFLAGS" -t bowtie2 make -s -j 4 all
+    - docker run --rm -e CXXFLAGS="$CXXFLAGS" -e POPCNT_CAPABILITY=0 -t bowtie2 make -s -j 4 all
 script: make allall && make simple-test
 notifications:
   slack:
