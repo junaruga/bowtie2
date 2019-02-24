@@ -32,8 +32,12 @@ matrix:
       while sleep 9m; do
           echo "=====[ $SECONDS seconds still running ]====="
       done &
-    # Run make all while make allall exceeds the maximum time lint (50 minutes).
-    - docker run --rm -e NO_TBB=1 -e POPCNT_CAPABILITY=0 -t bowtie2 make -s -j 4 all simple-test
+    # Suppress warnings to see the Travis log easily.
+    - CXXFLAGS="-Wno-deprecated-declarations -Wno-misleading-indentation -Wno-narrowing -Wno-unused-function"
+    # Run "make all" while "make allall simple-test" exceeds the Travis maximum time limit
+    # (50 minutes).
+    # - docker run --rm -e CXXFLAGS="$CXXFLAGS" NO_TBB=1 -e POPCNT_CAPABILITY=0 -t bowtie2 make -s -j 4 all
+    - docker run --rm -e CXXFLAGS="$CXXFLAGS" -t bowtie2 make -s -j 4 all
 script: make allall && make simple-test
 notifications:
   slack:
