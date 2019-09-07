@@ -9,15 +9,15 @@ addons:
   apt:
     packages:
     - libtbb-dev
-branches:
-  only:
-  - master
-  - cleaner_parsing
-  - scaling-old-parsing
-  - batch_parsing
-  - batch_parsing_output
-  - blocked_input
-  - bug_fixes
+# branches:
+#   only:
+#   - master
+#   - cleaner_parsing
+#   - scaling-old-parsing
+#   - batch_parsing
+#   - batch_parsing_output
+#   - blocked_input
+#   - bug_fixes
 matrix:
   include:
   # aarch64 - ARM 64-bit
