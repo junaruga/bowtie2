@@ -1,4 +1,4 @@
-FROM multiarch/ubuntu-debootstrap:arm64-bionic
+FROM arm64v8/ubuntu:bionic
 
 WORKDIR /build
 COPY . .

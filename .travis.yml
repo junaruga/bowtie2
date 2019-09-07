@@ -1,3 +1,4 @@
+dist: xenial
 sudo: required
 language: c++
 compiler:
@@ -22,7 +23,7 @@ matrix:
   # aarch64 - ARM 64-bit
   - name: aarch64
     install:
-    - docker run --rm --privileged multiarch/qemu-user-static:register --reset
+    - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
     - docker build --rm -t bowtie2 -f Dockerfile-aarch64 .
     script:
     # Ping stdout every 9 minutes or Travis kills build,
