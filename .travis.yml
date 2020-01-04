@@ -1,45 +1,79 @@
+dist: xenial
 sudo: required
-language: c++
-compiler:
-- clang
-- gcc
+language: cpp
+# branches:
+#   only:
+#     - master
+#     - cleaner_parsing
+#     - scaling-old-parsing
+#     - batch_parsing
+#     - batch_parsing_output
+#     - blocked_input
+#     - bug_fixes
+matrix:
+  include:
+    - os: linux
+      compiler: gcc-4.9
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test
+          packages:
+            - g++-4.9
+            - libtbb-dev
+            - zlib1g-dev
+      env:
+        - CC=gcc-4.9
+        - CXX=g++-4.9
+    - os: linux
+      compiler: gcc-8
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test
+          packages:
+            - g++-8
+            - libtbb-dev
+            - zlib1g-dev
+      env:
+        - CC=gcc-8
+        - CXX=g++-8
+        - CXXFLAGS="-fuse-ld=gold"
+    - os: osx
+      osx_image: xcode10.1
+      compiler: clang
+      addons:
+        homebrew:
+          packages:
+            - tbb
+          update: true
+      env:
+        - CC=clang
+        - CXX=clang++
+        - NPROC="$(sysctl -n hw.activecpu)"
+    # aarch64 - ARM 64-bit
+    - arch: arm64
+      compiler: gcc
+      env:
+        # Set POPCNT_CAPABILITY=0 to avoid a build error.
+        # NO_TBB=1 possibly saves the running time.
+        - POPCNT_CAPABILITY=0
+      # Run only "make allall" to save the running time.
+      script: scripts/travis_wait.sh make -s -j $NPROC allall
 cache: apt
 addons:
   apt:
     packages:
-    - libtbb-dev
-    - zlib1g-dev
-branches:
-  only:
-  - master
-  - cleaner_parsing
-  - scaling-old-parsing
-  - batch_parsing
-  - batch_parsing_output
-  - blocked_input
-  - bug_fixes
-matrix:
-  include:
-  # aarch64 - ARM 64-bit
-  - arch: arm64
-    compiler: gcc
-    env:
-    # Suppress warnings to see the Travis log easily.
-    - CXXFLAGS="-Wno-deprecated-declarations -Wno-misleading-indentation -Wno-narrowing -Wno-unused-function -Wno-unused-result"
-    # Set POPCNT_CAPABILITY=0 to avoid a build error.
-    # NO_TBB=1 possibly saves the running time.
-    - POPCNT_CAPABILITY=0
-    before_script:
-    # Ping stdout every 9 minutes or Travis kills build,
-    # as travis_wait does not show the command output while processing.
-    # https://docs.travis-ci.com/user/common-build-problems/#build-times-out-because-no-output-was-received
-    - |
-      while sleep 9m; do
-          echo "====[ $SECONDS seconds still running ]===="
-      done &
-    # Run "make all" to save the running time.
-    script: make -s -j 4 all
-script: make allall && make simple-test
-notifications:
-  slack:
-    secure: tfzT8N1fNV+oSV7tide9WrAj3ifs+LONJ3fCH1tUzexqrx23te4lE0oAj9C1cEMJ4evyRYwHNG8HZoLCOy8EfapqbWm6vgLIlkIBpeZ9E6f2jG6v0YuVDWWpqQC3qdGXCqWtHPjgs3i5OLsLwwQ/LItLoTqpBk2aYv+vGNs2F9g=
+      - libtbb-dev
+      - zlib1g-dev
+env:
+  global:
+    - NPROC="$(nproc)"
+before_install:
+  - uname -m
+before_script:
+  - echo CC=${CC} CXX=${CXX} NPROC=${NPROC}
+script: scripts/travis_wait.sh make -s -j $NPROC allall && make simple-test
+# notifications:
+#   slack:
+#     secure: tfzT8N1fNV+oSV7tide9WrAj3ifs+LONJ3fCH1tUzexqrx23te4lE0oAj9C1cEMJ4evyRYwHNG8HZoLCOy8EfapqbWm6vgLIlkIBpeZ9E6f2jG6v0YuVDWWpqQC3qdGXCqWtHPjgs3i5OLsLwwQ/LItLoTqpBk2aYv+vGNs2F9g=
