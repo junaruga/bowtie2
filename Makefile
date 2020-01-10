@@ -225,7 +225,7 @@ ifneq (,$(findstring AMD64,$(PROCESSOR_ARCHITEW6432)))
         endif
 endif
 ifeq (32,$(BITS))
-  $(error bowtie2 compilation requires a 64-bit platform )
+        $(error bowtie2 compilation requires a 64-bit platform )
 endif
 
 DEBUG_FLAGS    := -O0 -g3 $(M64_FLAG) $(SSE_FLAG)
