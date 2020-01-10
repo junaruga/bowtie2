@@ -223,12 +223,14 @@ DEBUG_DEFS     = -DCOMPILER_OPTIONS="\"$(DEBUG_FLAGS) $(CXXFLAGS)\""
 RELEASE_DEFS   = -DCOMPILER_OPTIONS="\"$(RELEASE_FLAGS) $(CXXFLAGS)\""
 
 SANITIZER_FLAGS :=
-ifeq (0,$(shell $(CXX) -E -fsanitize=address,undefined btypes.h > /dev/null 2>&1; echo $$?))
-        SANITIZER_FLAGS := -fsanitize=address,undefined
-else ifeq (0,$(shell $(CXX) -E -fsanitize=address btypes.h > /dev/null 2>&1; echo $$?))
-        SANITIZER_FLAGS := -fsanitize=address
-else ifeq (0,$(shell $(CXX) -E -fsanitize=undefined btypes.h > /dev/null 2>&1; echo $$?))
-        SANITIZER_FLAGS := -fsanitize=undefined
+ifneq (1,$(NO_SANITIZER))
+        ifeq (0,$(shell $(CXX) -E -fsanitize=address,undefined btypes.h > /dev/null 2>&1; echo $$?))
+                SANITIZER_FLAGS := -fsanitize=address,undefined
+        else ifeq (0,$(shell $(CXX) -E -fsanitize=address btypes.h > /dev/null 2>&1; echo $$?))
+                SANITIZER_FLAGS := -fsanitize=address
+        else ifeq (0,$(shell $(CXX) -E -fsanitize=undefined btypes.h > /dev/null 2>&1; echo $$?))
+                SANITIZER_FLAGS := -fsanitize=undefined
+        endif
 endif
 
 BOWTIE2_BIN_LIST :=     bowtie2-build-s \

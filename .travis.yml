@@ -75,6 +75,9 @@ matrix:
       env:
         - POPCNT_CAPABILITY=0
         - NO_TBB=1
+        # There is no AddressSanitizer libasanN deb package on s390x.
+        # https://packages.ubuntu.com/xenial/libasan2
+        - NO_SANITIZER=1
     # PPC64LE
     - os: linux
       arch: ppc64le
