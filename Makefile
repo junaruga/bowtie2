@@ -30,10 +30,6 @@ GCC_SUFFIX :=
 CC ?= $(GCC_PREFIX)/gcc$(GCC_SUFFIX)
 CPP ?= $(GCC_PREFIX)/g++$(GCC_SUFFIX)
 CXX ?= $(CPP)
-ifeq (aarch64,$(shell uname -m))
-        CXXFLAGS += -fopenmp-simd -DWITH_AARCH64
-        CPPFLAGS += -Ithird_party/simde
-endif
 
 HEADERS := $(wildcard *.h)
 BOWTIE_MM := 1
@@ -207,15 +203,21 @@ else ifeq (aarch64,$(shell uname -m))
         BITS := 64
         SSE_FLAG :=
         M64_FLAG :=
+        CXXFLAGS += -fopenmp-simd
+        CPPFLAGS += -Ithird_party/simde
 else ifeq (s390x,$(shell uname -m))
         BITS := 64
         SSE_FLAG :=
         M64_FLAG :=
+        CXXFLAGS += -fopenmp-simd
+        CPPFLAGS += -Ithird_party/simde
 else ifeq (ppc64le,$(shell uname -m))
         BITS := 64
         M64_FLAG :=
-        SSE_FLAG := -maltivec -mcpu=power8 -mtune=power9
-        CXXFLAGS += -DNO_WARN_X86_INTRINSICS -Wno-narrowing
+        # SSE_FLAG := -maltivec -mcpu=power8 -mtune=power9
+        SSE_FLAG :=
+        CXXFLAGS += -fopenmp-simd
+        CPPFLAGS += -Ithird_party/simde
 endif
 # msys will always be 32 bit so look at the cpu arch instead.
 ifneq (,$(findstring AMD64,$(PROCESSOR_ARCHITEW6432)))
