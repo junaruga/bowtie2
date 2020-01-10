@@ -9,7 +9,7 @@ branches:
     - batch_parsing
     - batch_parsing_output
     - blocked_input
-    - bug_fixes
+    - /^bug_fixes/
 matrix:
   include:
     # Linux (gcc4.9)
