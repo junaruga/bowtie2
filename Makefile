@@ -202,7 +202,7 @@ else ifeq ($(UNAME_ARCH),$(filter $(UNAME_ARCH),aarch64 s390x ppc64le))
         BITS := 64
         SSE_FLAG :=
         M64_FLAG :=
-        CXXFLAGS += -fopenmp-simd
+        CXXFLAGS += -fopenmp-simd -DSIMDE_ENABLE_OPENMP
         CPPFLAGS += -Ithird_party/simde
 endif
 # msys will always be 32 bit so look at the cpu arch instead.
