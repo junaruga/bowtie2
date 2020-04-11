@@ -29,11 +29,11 @@ matrix:
         - CXX=g++-8
         - CXXFLAGS="-fuse-ld=gold"
     # IBM Z (big endian)
-    # - os: linux
-    #   arch: s390x
-    #   env:
-    #     - POPCNT_CAPABILITY=0
-    #     - NO_TBB=1
+    - os: linux
+      arch: s390x
+      env:
+        - POPCNT_CAPABILITY=0
+        - NO_TBB=1
 cache: apt
 env:
   global:
