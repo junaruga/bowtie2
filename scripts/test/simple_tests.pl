@@ -255,18 +255,6 @@ my @cases = (
 	  hits   => [{ 2 => 1 }, { 3 => 1 }] },
 
 	# Paired-end reads that should align
-	{ name     => "Cline paired 1",
-	  ref      => [     "AGCATCGATCAAAAACTGA" ],
-	  #                  AGCATCGATC
-	  #                          TCAAAAACTGA
-	  #                  0123456789012345678
-	  cline_reads1  => "AGCATCGATC:IIIIIIIIII,".
-	                   "TCAGTTTTTGA",
-	  cline_reads2  => "TCAGTTTTTGA,".
-	                   "AGCATCGATC:IIIIIIIIII",
-	  pairhits => [ { "0,8" => 1 }, { "0,8" => 1 } ] },
-
-	# Paired-end reads that should align
 	{ name     => "Cline paired 2",
 	  ref      => [     "AGCATCGATCAAAAACTGA" ],
 	  args     => "-s 1",
